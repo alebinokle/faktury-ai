@@ -2,6 +2,10 @@ import OpenAI from "openai";
 
 export async function POST(req: Request) {
   try {
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
 
@@ -9,51 +13,50 @@ export async function POST(req: Request) {
       return new Response("Brak pliku", { status: 400 });
     }
 
-    if (!process.env.OPENAI_API_KEY) {
-      return new Response("Brak OPENAI_API_KEY w .env.local", { status: 500 });
-    }
-
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+    const prompt = `
+Przekształć tę fakturę do formatu XML zgodnego z KSeF.
+Zwróć tylko czysty XML, bez komentarzy i bez wyjaśnień.
+`;
 
     const bytes = await file.arrayBuffer();
     const base64 = Buffer.from(bytes).toString("base64");
 
-    const prompt = `
-Przeanalizuj załączoną fakturę (PDF lub obraz) i wygeneruj wynik WYŁĄCZNIE jako XML.
+    let content: any[] = [
+      {
+        type: "input_text",
+        text: prompt,
+      },
+    ];
 
-Cel:
-- dostosowanie faktury do formatu KSeF
-- zwrócenie samego XML bez żadnych komentarzy, bez wyjaśnień, bez bloków markdown
-- jeśli jakiegoś pola nie da się pewnie odczytać, wstaw pusty tag albo logiczną wartość domyślną
-- zachowaj strukturę poprawnego dokumentu XML faktury
-- nie dodawaj żadnego tekstu przed XML ani po XML
-
-Wynik ma być gotowym XML-em do zapisania do pliku.
-`;
+    if (file.type === "image/png" || file.type === "image/jpeg") {
+      content.push({
+        type: "input_image",
+        image_url: `data:${file.type};base64,${base64}`,
+      });
+    } else if (file.type === "application/pdf") {
+      content.push({
+        type: "input_file",
+        filename: file.name,
+        file_data: `data:application/pdf;base64,${base64}`,
+      });
+    } else {
+      return new Response(
+        "Obsługiwane formaty: PNG, JPG/JPEG, PDF",
+        { status: 400 }
+      );
+    }
 
     const response = await openai.responses.create({
       model: "gpt-4.1",
       input: [
         {
           role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: prompt,
-            },
-            {
-              type: "input_file",
-              filename: file.name,
-              file_data: `data:${file.type || "application/octet-stream"};base64,${base64}`,
-            },
-          ],
+          content,
         },
       ],
     });
 
-    const xml = response.output_text?.trim() || "";
+    const xml = (response.output_text || "").trim();
 
     return new Response(xml, {
       status: 200,
@@ -62,7 +65,7 @@ Wynik ma być gotowym XML-em do zapisania do pliku.
       },
     });
   } catch (error) {
-    console.error(error);
-    return new Response("Błąd podczas przetwarzania pliku", { status: 500 });
+    console.error("BŁĄD API:", error);
+    return new Response("Błąd przetwarzania pliku", { status: 500 });
   }
 }

@@ -70,11 +70,28 @@ export default function Home() {
             Wgraj fakturę w PDF lub jako zdjęcie. System odczyta dokument i zwróci XML.
           </p>
 
-          <input
-            type="file"
-            className="mb-4 w-full border p-2 rounded"
-            onChange={(e) => setFile(e.target.files?.[0] || null)}
-          />
+          <div className="mb-4">
+            <input
+              id="file-upload"
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg"
+              className="hidden"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+            />
+
+            <div className="flex items-center gap-3">
+              <label
+                htmlFor="file-upload"
+                className="inline-block cursor-pointer rounded border border-gray-400 bg-white px-4 py-2 text-sm text-gray-800 hover:bg-gray-50"
+              >
+                Wybierz plik
+              </label>
+
+              <span className="text-sm text-gray-700 break-all">
+                {file ? file.name : "Nie wybrano pliku"}
+              </span>
+            </div>
+          </div>
 
           <button
             onClick={handleUpload}

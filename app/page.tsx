@@ -1,108 +1,112 @@
-'use client'
+"use client";
 
-import { useState } from 'react'
+import { useState } from "react";
 
 export default function Home() {
-  const [file, setFile] = useState<File | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState('')
-  const [downloadUrl, setDownloadUrl] = useState('')
+  const [file, setFile] = useState<File | null>(null);
+  const [message, setMessage] = useState("");
 
-  const handleProcess = async () => {
-    if (!file) {
-      alert('Najpierw wybierz plik.')
-      return
+  const handleUpload = async () => {
+    if (!file) return;
+
+    setMessage("Przetwarzanie...");
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const res = await fetch("/api/process", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+
+    if (data.xml) {
+      const blob = new Blob([data.xml], { type: "application/xml" });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "faktura.xml";
+      a.click();
+
+      setMessage("Gotowe! XML pobrany.");
+    } else {
+      setMessage("Błąd podczas przetwarzania");
     }
-
-    try {
-      setLoading(true)
-      setResult('')
-
-      if (downloadUrl) {
-        URL.revokeObjectURL(downloadUrl)
-        setDownloadUrl('')
-      }
-
-      const formData = new FormData()
-      formData.append('file', file)
-
-      const res = await fetch('/api/process', {
-        method: 'POST',
-        body: formData,
-      })
-
-      const text = await res.text()
-
-      if (!res.ok) {
-        setResult(text || 'Wystąpił błąd.')
-        return
-      }
-
-      setResult(text)
-
-      const blob = new Blob([text], { type: 'application/xml' })
-      const url = URL.createObjectURL(blob)
-      setDownloadUrl(url)
-    } catch (error) {
-      console.error(error)
-      alert('Wystąpił błąd podczas wysyłania pliku.')
-    } finally {
-      setLoading(false)
-    }
-  }
+  };
 
   return (
-    <main className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
-      <div className="w-full max-w-3xl rounded-2xl bg-white shadow-lg p-8 border border-gray-200">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">
-          Przetwarzanie faktur do KSeF XML
-        </h1>
-        <p className="text-gray-600 mb-6">
-          Wgraj fakturę w PDF albo jako zdjęcie. System odczyta dokument i zwróci XML.
-        </p>
+    <div className="min-h-screen bg-gray-100">
+      
+      {/* 🔴 HEADER */}
+      <div className="bg-red-600 text-white py-4 px-6 flex items-center justify-between shadow">
+        <div className="font-bold text-lg">KSeF</div>
+        <div className="text-sm opacity-90">Konwerter faktur do XML</div>
+      </div>
 
-        <div className="space-y-4">
+      {/* 🧾 MAIN */}
+      <div className="flex flex-col items-center py-16 px-4">
+
+        {/* 📦 PANEL */}
+        <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-xl mb-10">
+          <h1 className="text-2xl font-bold mb-2 text-gray-800">
+            Przetwarzanie faktur do KSeF XML
+          </h1>
+
+          <p className="text-gray-500 mb-6">
+            Wgraj fakturę w PDF lub jako zdjęcie. System odczyta dokument i zwróci XML.
+          </p>
+
           <input
             type="file"
-            accept=".pdf,image/*"
-            onChange={(e) => {
-              const selectedFile = e.target.files?.[0] ?? null
-              setFile(selectedFile)
-            }}
-            className="block w-full text-sm text-gray-700 file:mr-4 file:rounded-lg file:border-0 file:bg-black file:px-4 file:py-2 file:text-white hover:file:opacity-90"
+            className="mb-4 w-full border p-2 rounded"
+            onChange={(e) => setFile(e.target.files?.[0] || null)}
           />
 
-          {file && (
-            <div className="rounded-xl bg-gray-100 p-4 text-sm text-gray-800">
-              <strong>Wybrano:</strong> {file.name}
-            </div>
-          )}
-
+          {/* 🔵 GRANATOWY BUTTON */}
           <button
-            onClick={handleProcess}
-            disabled={loading}
-            className="w-full rounded-xl bg-black px-4 py-3 text-white font-medium hover:opacity-90 transition disabled:opacity-50"
+            onClick={handleUpload}
+            className="w-full bg-blue-900 text-white py-2 rounded hover:bg-blue-800 transition font-semibold"
           >
-            {loading ? 'Przetwarzanie...' : 'Przetwórz do XML'}
+            Przetwórz do XML
           </button>
 
-          {downloadUrl && (
-            <a
-              href={downloadUrl}
-              download="faktura_ksef.xml"
-              className="block w-full rounded-xl bg-green-600 px-4 py-3 text-white font-medium text-center hover:opacity-90 transition"
-            >
-              Pobierz XML
-            </a>
-          )}
-
-          {result && (
-            <pre className="whitespace-pre-wrap rounded-xl bg-gray-100 p-4 text-sm text-gray-800 overflow-auto max-h-[500px]">
-              {result}
-            </pre>
+          {message && (
+            <div className="mt-4 p-3 bg-gray-100 rounded text-sm text-gray-700">
+              {message}
+            </div>
           )}
         </div>
+
+        {/* ℹ️ SEKCJA INFO */}
+        <div className="grid md:grid-cols-2 gap-6 max-w-4xl w-full">
+          
+          <div className="bg-white p-6 rounded-xl shadow">
+            <h2 className="font-bold text-lg mb-2 text-gray-800">
+              Czym jest KSeF?
+            </h2>
+            <p className="text-gray-600 text-sm">
+              Krajowy System e-Faktur (KSeF) to platforma Ministerstwa Finansów 
+              umożliwiająca wystawianie, przesyłanie i przechowywanie faktur 
+              w ustandaryzowanym formacie XML.
+            </p>
+          </div>
+
+          <div className="bg-white p-6 rounded-xl shadow">
+            <h2 className="font-bold text-lg mb-2 text-gray-800">
+              Nasza aplikacja
+            </h2>
+            <p className="text-gray-600 text-sm">
+              Aplikacja umożliwia szybką konwersję faktur (PDF, zdjęcia, skany) 
+              do formatu XML zgodnego z KSeF. Dzięki temu możesz automatycznie 
+              przygotować dokumenty do systemu bez ręcznego przepisywania danych.
+            </p>
+          </div>
+
+        </div>
+
       </div>
-    </main>
-  )
+    </div>
+  );
 }

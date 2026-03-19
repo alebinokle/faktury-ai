@@ -61,7 +61,7 @@ export default function Home() {
   const [contactBody, setContactBody] = useState("");
 
   const mailtoHref = useMemo(() => {
-    const to = "Kontakt@ksefxml.pl";
+    const to = "ksefxml@outlook.com";
     const subject = encodeURIComponent(contactSubject || "Pomoc techniczna – ksefxml.pl");
     const body = encodeURIComponent(contactBody || "");
     return `mailto:${to}?subject=${subject}&body=${body}`;
@@ -576,7 +576,7 @@ export default function Home() {
                 </label>
                 <input
                   type="text"
-                  value="Kontakt@ksefxml.pl"
+                  value="ksefxml@outlook.com"
                   readOnly
                   className="w-full rounded border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-700"
                 />

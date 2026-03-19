@@ -34,7 +34,7 @@ export default function PrivacyPolicyPage() {
           <p>ul. Motylewska 24</p>
           <p>64-920 Piła</p>
           <p>NIP: 7642529852</p>
-          <p>Email: Kontakt@ksefxml.pl</p>
+          <p>Email: ksefxml@outlook.com</p>
         </div>
 
         <h2 className="font-bold">2. Zakres przetwarzanych danych</h2>
@@ -82,7 +82,7 @@ export default function PrivacyPolicyPage() {
         <h2 className="font-bold">8. Kontakt</h2>
         <p>
           W sprawach dotyczących prywatności i danych osobowych można kontaktować
-          się pod adresem: <strong>Kontakt@ksefxml.pl</strong>
+          się pod adresem: <strong>ksefxml@outlook.com</strong>
         </p>
 
         <h2 className="font-bold">9. Postanowienia końcowe</h2>

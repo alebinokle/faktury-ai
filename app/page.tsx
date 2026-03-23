@@ -8,6 +8,7 @@ type ApiErrorResponse = {
   missing_fields?: string[];
   extracted_data?: Record<string, unknown>;
   raw_response?: string;
+  credits_left?: number;
 };
 
 type ManualFieldMap = Record<string, string>;
@@ -46,6 +47,10 @@ export default function Home() {
   const [status, setStatus] = useState<"idle" | "success" | "error" | "info">("idle");
   const [generatedXml, setGeneratedXml] = useState("");
   const [generatedFilename, setGeneratedFilename] = useState("faktura.xml");
+
+  const [email, setEmail] = useState("");
+  const [credits, setCredits] = useState<number | null>(null);
+  const [userMessage, setUserMessage] = useState("");
 
   const [showInstructions, setShowInstructions] = useState(false);
   const [showContact, setShowContact] = useState(false);
@@ -97,10 +102,142 @@ export default function Home() {
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   };
 
+  const handleFindOrCreateUser = async () => {
+    try {
+      setUserMessage("");
+
+      const trimmedEmail = email.trim().toLowerCase();
+      if (!trimmedEmail) {
+        setUserMessage("Podaj adres e-mail.");
+        return;
+      }
+
+      const res = await fetch("/api/user/find-or-create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: trimmedEmail }),
+      });
+
+      let data;
+
+      try {
+        data = await res.json();
+      } catch (e) {
+        console.error("Niepoprawna odpowiedź:", e);
+        setUserMessage("Serwer zwrócił niepoprawną odpowiedź (nie JSON).");
+        return;
+      }
+
+      if (!res.ok || !data?.success) {
+        setUserMessage(data?.message || "Nie udało się utworzyć użytkownika.");
+        return;
+      }
+
+      setEmail(data.user.email);
+      setCredits(data.user.credits);
+      setUserMessage(`Konto gotowe: ${data.user.email}`);
+    } catch (error) {
+      console.error(error);
+      setUserMessage("Wystąpił błąd podczas pobierania użytkownika.");
+    }
+  };
+
+  const handleRefreshCredits = async () => {
+    try {
+      setUserMessage("");
+
+      const trimmedEmail = email.trim().toLowerCase();
+      if (!trimmedEmail) {
+        setUserMessage("Podaj adres e-mail.");
+        return;
+      }
+
+      const res = await fetch("/api/user/credits", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: trimmedEmail }),
+      });
+
+      let data;
+
+      try {
+        data = await res.json();
+      } catch (e) {
+        console.error("Niepoprawna odpowiedź z /api/user/credits:", e);
+        setUserMessage("Serwer zwrócił niepoprawną odpowiedź przy pobieraniu kredytów.");
+        return;
+      }
+
+      if (!res.ok || !data?.success) {
+        setUserMessage(data?.message || "Nie udało się pobrać kredytów.");
+        return;
+      }
+
+      setCredits(data.user.credits);
+      setUserMessage(`Masz ${data.user.credits} kredytów.`);
+    } catch (error) {
+      console.error(error);
+      setUserMessage("Wystąpił błąd podczas pobierania kredytów.");
+    }
+  };
+
+  const handleAddTestCredits = async (amount: number) => {
+    try {
+      setUserMessage("");
+
+      const trimmedEmail = email.trim().toLowerCase();
+      if (!trimmedEmail) {
+        setUserMessage("Podaj adres e-mail.");
+        return;
+      }
+
+      const res = await fetch("/api/user/add-credits", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: trimmedEmail, credits: amount }),
+      });
+
+      let data;
+
+      try {
+        data = await res.json();
+      } catch (e) {
+        console.error("Niepoprawna odpowiedź z /api/user/add-credits:", e);
+        setUserMessage("Serwer zwrócił niepoprawną odpowiedź przy dodawaniu kredytów.");
+        return;
+      }
+
+      if (!res.ok || !data?.success) {
+        setUserMessage(data?.message || "Nie udało się dodać kredytów.");
+        return;
+      }
+
+      setCredits(data.user.credits);
+      setUserMessage(`Dodano ${amount} kredytów. Aktualnie masz ${data.user.credits}.`);
+    } catch (error) {
+      console.error(error);
+      setUserMessage("Wystąpił błąd podczas dodawania kredytów.");
+    }
+  };
+
   const handleUpload = async () => {
     if (!acceptedTerms) {
       setStatus("error");
       setMessage("Aby wysłać plik, musisz zaakceptować regulamin i politykę prywatności.");
+      setMissingFields([]);
+      setResult("");
+      return;
+    }
+
+    if (!email.trim()) {
+      setStatus("error");
+      setMessage("Najpierw podaj e-mail i zapisz konto.");
       setMissingFields([]);
       setResult("");
       return;
@@ -122,9 +259,11 @@ export default function Home() {
       setMissingFields([]);
       setManualData({});
       setExtractedData({});
+      setShowFixModal(false);
 
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("email", email.trim().toLowerCase());
 
       const res = await fetch("/api/process", {
         method: "POST",
@@ -133,12 +272,25 @@ export default function Home() {
 
       const contentType = res.headers.get("content-type") || "";
       const disposition = res.headers.get("content-disposition") || "";
+      const creditsLeftHeader = res.headers.get("x-credits-left");
 
       if (!res.ok) {
         if (contentType.includes("application/json")) {
           const err: ApiErrorResponse = await res.json();
           const missing = err.missing_fields || [];
           const extracted = (err.extracted_data || {}) as Record<string, unknown>;
+
+          if (typeof err.credits_left === "number") {
+            setCredits(err.credits_left);
+          }
+
+          if (res.status === 402) {
+            setStatus("error");
+            setMessage(err.message || "Brak kredytów. Dokup pakiet, aby wygenerować XML.");
+            setMissingFields([]);
+            setResult(JSON.stringify(err, null, 2));
+            return;
+          }
 
           setStatus("error");
           setMessage(err.message || "Wystąpił błąd podczas przetwarzania.");
@@ -160,6 +312,7 @@ export default function Home() {
                 missing_fields: err.missing_fields,
                 extracted_data: err.extracted_data,
                 raw_response: err.raw_response,
+                credits_left: err.credits_left,
               },
               null,
               2
@@ -187,6 +340,13 @@ export default function Home() {
         filename = match[1];
       }
 
+      if (creditsLeftHeader !== null) {
+        const parsedCredits = Number(creditsLeftHeader);
+        if (!Number.isNaN(parsedCredits)) {
+          setCredits(parsedCredits);
+        }
+      }
+
       setGeneratedXml(text);
       setGeneratedFilename(filename);
       setResult(text);
@@ -195,6 +355,7 @@ export default function Home() {
       setMissingFields([]);
 
       downloadXmlFromValues(text, filename);
+      await handleRefreshCredits();
     } catch (error) {
       console.error(error);
       setStatus("error");
@@ -209,6 +370,12 @@ export default function Home() {
   const handleGenerateFromManualData = async () => {
     if (!file) return;
 
+    if (!email.trim()) {
+      setStatus("error");
+      setMessage("Najpierw podaj e-mail i zapisz konto.");
+      return;
+    }
+
     try {
       setLoading(true);
       setStatus("info");
@@ -217,6 +384,7 @@ export default function Home() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("manualData", JSON.stringify(manualData));
+      formData.append("email", email.trim().toLowerCase());
 
       const res = await fetch("/api/process", {
         method: "POST",
@@ -225,8 +393,29 @@ export default function Home() {
 
       const contentType = res.headers.get("content-type") || "";
       const disposition = res.headers.get("content-disposition") || "";
+      const creditsLeftHeader = res.headers.get("x-credits-left");
 
       if (!res.ok) {
+        if (contentType.includes("application/json")) {
+          const err: ApiErrorResponse = await res.json();
+
+          if (typeof err.credits_left === "number") {
+            setCredits(err.credits_left);
+          }
+
+          if (res.status === 402) {
+            setStatus("error");
+            setMessage(err.message || "Brak kredytów. Dokup pakiet, aby wygenerować XML.");
+            setResult(JSON.stringify(err, null, 2));
+            return;
+          }
+
+          setStatus("error");
+          setMessage(err.message || "Nie udało się wygenerować XML po uzupełnieniu danych.");
+          setResult(JSON.stringify(err, null, 2));
+          return;
+        }
+
         const errText = await res.text();
         setStatus("error");
         setMessage("Nie udało się wygenerować XML po uzupełnieniu danych.");
@@ -242,6 +431,13 @@ export default function Home() {
         filename = match[1];
       }
 
+      if (creditsLeftHeader !== null) {
+        const parsedCredits = Number(creditsLeftHeader);
+        if (!Number.isNaN(parsedCredits)) {
+          setCredits(parsedCredits);
+        }
+      }
+
       setGeneratedXml(text);
       setGeneratedFilename(filename);
       setResult(text);
@@ -251,6 +447,7 @@ export default function Home() {
       setMissingFields([]);
 
       downloadXmlFromValues(text, filename);
+      await handleRefreshCredits();
     } catch (error) {
       console.error(error);
       setStatus("error");
@@ -281,6 +478,58 @@ export default function Home() {
             Wgraj fakturę w PDF lub jako zdjęcie. System odczyta dokument i
             wygeneruje XML albo pokaże, jakich danych brakuje.
           </p>
+
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 mb-4">
+            <h2 className="text-lg font-semibold text-gray-800 mb-3">Konto i kredyty</h2>
+
+            <div className="flex flex-col gap-3">
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Podaj swój e-mail"
+                className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500"
+              />
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleFindOrCreateUser}
+                  className="rounded bg-blue-900 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+                >
+                  Zapisz / znajdź konto
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleRefreshCredits}
+                  className="rounded border border-blue-900 bg-white px-4 py-2 text-sm font-semibold text-blue-900 hover:bg-blue-50"
+                >
+                  Sprawdź kredyty
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleAddTestCredits(30)}
+                  className="rounded border border-green-700 bg-white px-4 py-2 text-sm font-semibold text-green-700 hover:bg-green-50"
+                >
+                  Dodaj testowo 30
+                </button>
+              </div>
+
+              {credits !== null && (
+                <div className="text-sm font-medium text-gray-700">
+                  Aktualna liczba kredytów: <span className="text-blue-900">{credits}</span>
+                </div>
+              )}
+
+              {userMessage && (
+                <div className="rounded border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                  {userMessage}
+                </div>
+              )}
+            </div>
+          </div>
 
           <div className="mb-4">
             <input
@@ -646,26 +895,35 @@ export default function Home() {
             </div>
 
             <div className="overflow-y-auto px-6 py-5 text-sm text-gray-700 space-y-4">
-  <p>Generator jest narzędziem pomocniczym i może być w fazie rozwoju.</p>
-  <p>Użytkownik ma obowiązek sprawdzić poprawność danych przed użyciem XML.</p>
-  <p>Dane są przetwarzane wyłącznie w celu wygenerowania pliku XML i obsługi technicznej.</p>
+              <p>Generator jest narzędziem pomocniczym i może być w fazie rozwoju.</p>
+              <p>Użytkownik ma obowiązek sprawdzić poprawność danych przed użyciem XML.</p>
+              <p>Dane są przetwarzane wyłącznie w celu wygenerowania pliku XML i obsługi technicznej.</p>
 
-  <p className="font-medium">Podstawa prawna przetwarzania danych:</p>
-  <ul className="list-disc pl-5 space-y-1">
-    <li>art. 6 ust. 1 lit. b RODO – realizacja usługi generowania XML</li>
-    <li>art. 6 ust. 1 lit. f RODO – uzasadniony interes administratora</li>
-  </ul>
+              <p className="font-medium">Podstawa prawna przetwarzania danych:</p>
+              <ul className="list-disc pl-5 space-y-1">
+                <li>art. 6 ust. 1 lit. b RODO – realizacja usługi generowania XML</li>
+                <li>art. 6 ust. 1 lit. f RODO – uzasadniony interes administratora</li>
+              </ul>
 
-  <p>Dane mogą być przetwarzane przez zewnętrznych dostawców technologicznych, w tym OpenAI, w celu analizy dokumentów i wygenerowania danych XML.</p>
+              <p>
+                Dane mogą być przetwarzane przez zewnętrznych dostawców technologicznych,
+                w tym OpenAI, w celu analizy dokumentów i wygenerowania danych XML.
+              </p>
 
-  <p>Dane mogą być przekazywane poza Europejski Obszar Gospodarczy (np. do USA) z zastosowaniem odpowiednich zabezpieczeń.</p>
+              <p>
+                Dane mogą być przekazywane poza Europejski Obszar Gospodarczy (np. do USA)
+                z zastosowaniem odpowiednich zabezpieczeń.
+              </p>
 
-  <p>Dane nie są przechowywane dłużej niż to konieczne do realizacji usługi i nie są archiwizowane.</p>
+              <p>
+                Dane nie są przechowywane dłużej niż to konieczne do realizacji usługi
+                i nie są archiwizowane.
+              </p>
 
-  <p className="font-medium text-red-600">
-    Administrator nie ponosi odpowiedzialności za błędy w wygenerowanych danych XML.
-  </p>
-</div>
+              <p className="font-medium text-red-600">
+                Administrator nie ponosi odpowiedzialności za błędy w wygenerowanych danych XML.
+              </p>
+            </div>
 
             <div className="border-t px-6 py-4 flex flex-wrap gap-3">
               <button

@@ -15,6 +15,7 @@ model User {
 
   payments    Payment[]
   creditUsage CreditUsage[]
+  sessions    Session[]
 }
 
 model Payment {
@@ -36,6 +37,25 @@ model CreditUsage {
   creditsUsed Int      @default(1)
   invoiceName String?
   createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model LoginToken {
+  id        String   @id @default(cuid())
+  email     String
+  token     String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

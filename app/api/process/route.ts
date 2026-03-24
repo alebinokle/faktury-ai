@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { PrismaClient } from "@prisma/client";
+import { cookies } from "next/headers";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -11,6 +12,38 @@ export const runtime = "nodejs";
 const prisma = globalThis.__prisma__ || new PrismaClient();
 if (process.env.NODE_ENV !== "production") {
   globalThis.__prisma__ = prisma;
+}
+
+async function getUserFromSession() {
+  const cookieStore = await cookies();
+  const sessionToken = cookieStore.get("session_token")?.value;
+
+  if (!sessionToken) return null;
+
+  const session = await prisma.session.findUnique({
+    where: { token: sessionToken },
+    include: { user: true },
+  });
+
+  if (!session) return null;
+  if (session.expiresAt < new Date()) return null;
+
+  const newExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+  await prisma.session.update({
+    where: { token: sessionToken },
+    data: { expiresAt: newExpiresAt },
+  });
+
+  cookieStore.set("session_token", sessionToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    expires: newExpiresAt,
+  });
+
+  return session.user;
 }
 
 type InvoiceItem = {
@@ -45,7 +78,6 @@ type InvoiceData = {
   paid: boolean | null;
   items: InvoiceItem[];
 
-  // zgodność wsteczna z wcześniejszą wersją
   vat_rate?: string | null;
   item_name?: string | null;
   quantity?: string | null;
@@ -657,21 +689,11 @@ export async function POST(req: Request) {
     const formData = await req.formData();
 
     const file = formData.get("file") as File | null;
-    const emailRaw = formData.get("email");
-    const email = typeof emailRaw === "string" ? emailRaw.trim().toLowerCase() : "";
-
     const manualDataRaw = formData.get("manualData");
     const manualData =
       typeof manualDataRaw === "string" && manualDataRaw.trim()
         ? (JSON.parse(manualDataRaw) as Record<string, unknown>)
         : {};
-
-    if (!email) {
-      return Response.json(
-        { success: false, message: "Brak adresu e-mail użytkownika." },
-        { status: 400 }
-      );
-    }
 
     if (!file) {
       return Response.json(
@@ -698,20 +720,33 @@ export async function POST(req: Request) {
       );
     }
 
-    const user = await prisma.user.findUnique({
-      where: { email },
-    });
+    const user = await getUserFromSession();
 
     if (!user) {
+      return Response.json(
+        { success: false, message: "Nie jesteś zalogowany." },
+        { status: 401 }
+      );
+    }
+
+    const freshUser = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: {
+        id: true,
+        credits: true,
+      },
+    });
+
+    if (!freshUser) {
       return Response.json(
         { success: false, message: "Nie znaleziono konta użytkownika." },
         { status: 404 }
       );
     }
 
-    if (user.credits < 1) {
+    if (freshUser.credits < 1) {
       return Response.json(
-        { success: false, message: "Brak kredytów na koncie." },
+        { success: false, message: "Brak kredytów na koncie.", credits_left: 0 },
         { status: 402 }
       );
     }
@@ -794,7 +829,11 @@ Zwróć JSON dokładnie w tej strukturze:
 }
 `;
 
-    const content: Array<Record<string, unknown>> = [{ type: "input_text", text: prompt }];
+    const content: Array<
+      | { type: "input_text"; text: string }
+      | { type: "input_image"; image_url: string }
+      | { type: "input_file"; filename: string; file_data: string }
+    > = [{ type: "input_text", text: prompt }];
 
     if (file.type.startsWith("image/")) {
       content.push({
@@ -811,7 +850,12 @@ Zwróć JSON dokładnie w tej strukturze:
 
     const response = await openai.responses.create({
       model: "gpt-4.1",
-      input: [{ role: "user", content }],
+      input: [
+        {
+          role: "user",
+          content: "tekst"
+        },
+      ],
     });
 
     const output = cleanJsonText(response.output_text || "");
@@ -937,11 +981,7 @@ Zwróć JSON dokładnie w tej strukturze:
       totalsMismatch = true;
     }
 
-    if (
-      !Number.isNaN(declaredGross) &&
-      !Number.isNaN(summedGross) &&
-      !nearlyEqual(declaredGross, summedGross)
-    ) {
+    if (!Number.isNaN(declaredGross) && !Number.isNaN(summedGross) && !nearlyEqual(declaredGross, summedGross)) {
       totalsMismatch = true;
     }
 
@@ -967,6 +1007,7 @@ Zwróć JSON dokładnie w tej strukturze:
           line_missing_fields: lineMissingFields,
           totals_mismatch: totalsMismatch,
           totals_from_items: totalsFromItems,
+          credits_left: freshUser.credits,
         },
         { status: 400 }
       );
@@ -975,32 +1016,38 @@ Zwróć JSON dokładnie w tej strukturze:
     const safeInvoiceNumber = buildSafeFilename(data.invoice_number);
     const xml = buildXml(data);
 
-    await prisma.$transaction([
+    const [, updatedUser] = await prisma.$transaction([
       prisma.user.update({
-        where: { email },
+        where: { id: freshUser.id },
         data: {
           credits: {
             decrement: 1,
           },
         },
       }),
+      prisma.user.findUniqueOrThrow({
+        where: { id: freshUser.id },
+        select: {
+          credits: true,
+        },
+      }),
       prisma.creditUsage.create({
         data: {
-          userId: user.id,
+          userId: freshUser.id,
           creditsUsed: 1,
           invoiceName: file.name || `${safeInvoiceNumber}.xml`,
         },
       }),
     ]);
 
-return new Response(xml, {
-  status: 200,
-  headers: {
-    "Content-Type": "application/xml; charset=utf-8",
-    "Content-Disposition": `attachment; filename="${safeInvoiceNumber}.xml"`,
-    "x-credits-left": String(user.credits - 1),
-  },
-});
+    return new Response(xml, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/xml; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${safeInvoiceNumber}.xml"`,
+        "x-credits-left": String(updatedUser.credits),
+      },
+    });
   } catch (error) {
     console.error("BŁĄD API:", error);
 

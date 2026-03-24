@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type ApiErrorResponse = {
   success?: boolean;
@@ -12,6 +12,15 @@ type ApiErrorResponse = {
 };
 
 type ManualFieldMap = Record<string, string>;
+
+type MeResponse = {
+  loggedIn: boolean;
+  user?: {
+    id: string;
+    email: string;
+    credits: number;
+  };
+};
 
 const fieldLabels: Record<string, string> = {
   seller_nip: "NIP sprzedawcy",
@@ -50,7 +59,10 @@ export default function Home() {
 
   const [email, setEmail] = useState("");
   const [credits, setCredits] = useState<number | null>(null);
+  const [userEmail, setUserEmail] = useState("");
   const [userMessage, setUserMessage] = useState("");
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [checkingLogin, setCheckingLogin] = useState(true);
 
   const [showInstructions, setShowInstructions] = useState(false);
   const [showContact, setShowContact] = useState(false);
@@ -71,6 +83,42 @@ export default function Home() {
     const body = encodeURIComponent(contactBody || "");
     return `mailto:${to}?subject=${subject}&body=${body}`;
   }, [contactSubject, contactBody]);
+
+  useEffect(() => {
+    const loadMe = async () => {
+      try {
+        const res = await fetch("/api/auth/me", { cache: "no-store" });
+
+let data;
+try {
+  data = await res.json();
+} catch (error) {
+  console.error("Błąd /api/auth/me:", error);
+  return;
+}
+
+        if (data.loggedIn && data.user) {
+          setLoggedIn(true);
+          setUserEmail(data.user.email);
+          setCredits(data.user.credits);
+          setUserMessage(`Zalogowano jako ${data.user.email}`);
+        } else {
+          setLoggedIn(false);
+          setUserEmail("");
+          setCredits(null);
+        }
+      } catch (error) {
+        console.error(error);
+        setLoggedIn(false);
+        setUserEmail("");
+        setCredits(null);
+      } finally {
+        setCheckingLogin(false);
+      }
+    };
+
+    loadMe();
+  }, []);
 
   const downloadXml = () => {
     if (!generatedXml) return;
@@ -102,127 +150,90 @@ export default function Home() {
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   };
 
-  const handleFindOrCreateUser = async () => {
+  const handleSendLoginLink = async () => {
+  try {
+    setUserMessage("");
+
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail) {
+      setUserMessage("Podaj adres e-mail.");
+      return;
+    }
+
+    const res = await fetch("/api/auth/send-link", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ email: trimmedEmail }),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || !data?.success) {
+      setUserMessage(data?.message || "Nie udało się wysłać linku logowania.");
+      return;
+    }
+
+    setUserMessage("Link logowania został wysłany na podany adres e-mail.");
+  } catch (error) {
+    console.error(error);
+    setUserMessage("Wystąpił błąd podczas wysyłania linku logowania.");
+  }
+};
+
+  const handleRefreshSession = async () => {
     try {
       setUserMessage("");
 
-      const trimmedEmail = email.trim().toLowerCase();
-      if (!trimmedEmail) {
-        setUserMessage("Podaj adres e-mail.");
-        return;
+      const res = await fetch("/api/auth/me", { cache: "no-store" });
+
+let data;
+try {
+  data = await res.json();
+} catch (error) {
+  console.error("Błąd /api/auth/me:", error);
+  return;
+}
+
+      if (data.loggedIn && data.user) {
+        setLoggedIn(true);
+        setUserEmail(data.user.email);
+        setCredits(data.user.credits);
+        setUserMessage(`Zalogowano jako ${data.user.email}`);
+      } else {
+        setLoggedIn(false);
+        setUserEmail("");
+        setCredits(null);
+        setUserMessage("Nie jesteś zalogowany.");
       }
-
-      const res = await fetch("/api/user/find-or-create", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ email: trimmedEmail }),
-      });
-
-      let data;
-
-      try {
-        data = await res.json();
-      } catch (e) {
-        console.error("Niepoprawna odpowiedź:", e);
-        setUserMessage("Serwer zwrócił niepoprawną odpowiedź (nie JSON).");
-        return;
-      }
-
-      if (!res.ok || !data?.success) {
-        setUserMessage(data?.message || "Nie udało się utworzyć użytkownika.");
-        return;
-      }
-
-      setEmail(data.user.email);
-      setCredits(data.user.credits);
-      setUserMessage(`Konto gotowe: ${data.user.email}`);
     } catch (error) {
       console.error(error);
-      setUserMessage("Wystąpił błąd podczas pobierania użytkownika.");
+      setUserMessage("Nie udało się odświeżyć sesji.");
     }
   };
 
-  const handleRefreshCredits = async () => {
+  const handleLogout = async () => {
     try {
-      setUserMessage("");
-
-      const trimmedEmail = email.trim().toLowerCase();
-      if (!trimmedEmail) {
-        setUserMessage("Podaj adres e-mail.");
-        return;
-      }
-
-      const res = await fetch("/api/user/credits", {
+      const res = await fetch("/api/auth/logout", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ email: trimmedEmail }),
       });
 
-      let data;
-
-      try {
-        data = await res.json();
-      } catch (e) {
-        console.error("Niepoprawna odpowiedź z /api/user/credits:", e);
-        setUserMessage("Serwer zwrócił niepoprawną odpowiedź przy pobieraniu kredytów.");
-        return;
-      }
+      const data = await res.json();
 
       if (!res.ok || !data?.success) {
-        setUserMessage(data?.message || "Nie udało się pobrać kredytów.");
+        setUserMessage(data?.message || "Nie udało się wylogować.");
         return;
       }
 
-      setCredits(data.user.credits);
-      setUserMessage(`Masz ${data.user.credits} kredytów.`);
+      setLoggedIn(false);
+      setUserEmail("");
+      setCredits(null);
+      setEmail("");
+      setUserMessage("Wylogowano.");
     } catch (error) {
       console.error(error);
-      setUserMessage("Wystąpił błąd podczas pobierania kredytów.");
-    }
-  };
-
-  const handleAddTestCredits = async (amount: number) => {
-    try {
-      setUserMessage("");
-
-      const trimmedEmail = email.trim().toLowerCase();
-      if (!trimmedEmail) {
-        setUserMessage("Podaj adres e-mail.");
-        return;
-      }
-
-      const res = await fetch("/api/user/add-credits", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ email: trimmedEmail, credits: amount }),
-      });
-
-      let data;
-
-      try {
-        data = await res.json();
-      } catch (e) {
-        console.error("Niepoprawna odpowiedź z /api/user/add-credits:", e);
-        setUserMessage("Serwer zwrócił niepoprawną odpowiedź przy dodawaniu kredytów.");
-        return;
-      }
-
-      if (!res.ok || !data?.success) {
-        setUserMessage(data?.message || "Nie udało się dodać kredytów.");
-        return;
-      }
-
-      setCredits(data.user.credits);
-      setUserMessage(`Dodano ${amount} kredytów. Aktualnie masz ${data.user.credits}.`);
-    } catch (error) {
-      console.error(error);
-      setUserMessage("Wystąpił błąd podczas dodawania kredytów.");
+      setUserMessage("Wystąpił błąd podczas wylogowywania.");
     }
   };
 
@@ -235,9 +246,9 @@ export default function Home() {
       return;
     }
 
-    if (!email.trim()) {
+    if (!loggedIn) {
       setStatus("error");
-      setMessage("Najpierw podaj e-mail i zapisz konto.");
+      setMessage("Najpierw zaloguj się linkiem wysłanym na e-mail.");
       setMissingFields([]);
       setResult("");
       return;
@@ -263,7 +274,7 @@ export default function Home() {
 
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("email", email.trim().toLowerCase());
+      formData.append("manualData", JSON.stringify(manualData));
 
       const res = await fetch("/api/process", {
         method: "POST",
@@ -284,6 +295,17 @@ export default function Home() {
             setCredits(err.credits_left);
           }
 
+          if (res.status === 401) {
+            setLoggedIn(false);
+            setUserEmail("");
+            setCredits(null);
+            setStatus("error");
+            setMessage(err.message || "Sesja wygasła. Zaloguj się ponownie.");
+            setMissingFields([]);
+            setResult(JSON.stringify(err, null, 2));
+            return;
+          }
+
           if (res.status === 402) {
             setStatus("error");
             setMessage(err.message || "Brak kredytów. Dokup pakiet, aby wygenerować XML.");
@@ -300,8 +322,7 @@ export default function Home() {
           const initialManualData: ManualFieldMap = {};
           for (const field of missing) {
             const raw = extracted[field];
-            initialManualData[field] =
-              raw === null || raw === undefined ? "" : String(raw);
+            initialManualData[field] = raw === null || raw === undefined ? "" : String(raw);
           }
           setManualData(initialManualData);
 
@@ -355,7 +376,6 @@ export default function Home() {
       setMissingFields([]);
 
       downloadXmlFromValues(text, filename);
-      await handleRefreshCredits();
     } catch (error) {
       console.error(error);
       setStatus("error");
@@ -370,9 +390,9 @@ export default function Home() {
   const handleGenerateFromManualData = async () => {
     if (!file) return;
 
-    if (!email.trim()) {
+    if (!loggedIn) {
       setStatus("error");
-      setMessage("Najpierw podaj e-mail i zapisz konto.");
+      setMessage("Sesja wygasła. Zaloguj się ponownie.");
       return;
     }
 
@@ -384,7 +404,6 @@ export default function Home() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("manualData", JSON.stringify(manualData));
-      formData.append("email", email.trim().toLowerCase());
 
       const res = await fetch("/api/process", {
         method: "POST",
@@ -401,6 +420,16 @@ export default function Home() {
 
           if (typeof err.credits_left === "number") {
             setCredits(err.credits_left);
+          }
+
+          if (res.status === 401) {
+            setLoggedIn(false);
+            setUserEmail("");
+            setCredits(null);
+            setStatus("error");
+            setMessage(err.message || "Sesja wygasła. Zaloguj się ponownie.");
+            setResult(JSON.stringify(err, null, 2));
+            return;
           }
 
           if (res.status === 402) {
@@ -447,7 +476,6 @@ export default function Home() {
       setMissingFields([]);
 
       downloadXmlFromValues(text, filename);
-      await handleRefreshCredits();
     } catch (error) {
       console.error(error);
       setStatus("error");
@@ -460,6 +488,16 @@ export default function Home() {
   const openMailClient = () => {
     window.location.href = mailtoHref;
   };
+
+  if (checkingLogin) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+        <div className="rounded-xl bg-white px-6 py-4 shadow text-gray-700">
+          Ładowanie...
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -475,60 +513,87 @@ export default function Home() {
           </h1>
 
           <p className="text-gray-500 mb-6">
-            Wgraj fakturę w PDF lub jako zdjęcie. System odczyta dokument i
-            wygeneruje XML albo pokaże, jakich danych brakuje.
+            Wgraj fakturę w PDF lub jako zdjęcie. System odczyta dokument i wygeneruje XML albo pokaże, jakich danych brakuje.
           </p>
 
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 mb-4">
-            <h2 className="text-lg font-semibold text-gray-800 mb-3">Konto i kredyty</h2>
+            <h2 className="text-lg font-semibold text-gray-800 mb-3">Logowanie i konto</h2>
 
-            <div className="flex flex-col gap-3">
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="Podaj swój e-mail"
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500"
-              />
+            {!loggedIn ? (
+              <div className="flex flex-col gap-3">
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="Podaj swój e-mail"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500"
+                />
 
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={handleFindOrCreateUser}
-                  className="rounded bg-blue-900 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
-                >
-                  Zapisz / znajdź konto
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSendLoginLink}
+                    className="rounded bg-blue-900 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+                  >
+                    Wyślij link logowania
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={handleRefreshCredits}
-                  className="rounded border border-blue-900 bg-white px-4 py-2 text-sm font-semibold text-blue-900 hover:bg-blue-50"
-                >
-                  Sprawdź kredyty
-                </button>
+                  <button
+                    type="button"
+                    onClick={handleRefreshSession}
+                    className="rounded border border-blue-900 bg-white px-4 py-2 text-sm font-semibold text-blue-900 hover:bg-blue-50"
+                  >
+                    Sprawdź logowanie
+                  </button>
+                </div>
 
-                <button
-                  type="button"
-                  onClick={() => handleAddTestCredits(30)}
-                  className="rounded border border-green-700 bg-white px-4 py-2 text-sm font-semibold text-green-700 hover:bg-green-50"
-                >
-                  Dodaj testowo 30
-                </button>
+                <div className="text-xs text-gray-500">
+                Po kliknięciu przycisku wyślemy link logowania na podany adres e-mail.
+                </div>
+
+                {userMessage && (
+                  <div className="rounded border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                    {userMessage}
+                  </div>
+                )}
               </div>
-
-              {credits !== null && (
-                <div className="text-sm font-medium text-gray-700">
-                  Aktualna liczba kredytów: <span className="text-blue-900">{credits}</span>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <div className="rounded border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
+                  Zalogowano jako: <span className="font-semibold">{userEmail}</span>
                 </div>
-              )}
 
-              {userMessage && (
-                <div className="rounded border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                  {userMessage}
+                {credits !== null && (
+                  <div className="text-sm font-medium text-gray-700">
+                    Aktualna liczba kredytów: <span className="text-blue-900">{credits}</span>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleRefreshSession}
+                    className="rounded border border-blue-900 bg-white px-4 py-2 text-sm font-semibold text-blue-900 hover:bg-blue-50"
+                  >
+                    Odśwież konto
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="rounded border border-red-700 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50"
+                  >
+                    Wyloguj
+                  </button>
                 </div>
-              )}
-            </div>
+
+                {userMessage && (
+                  <div className="rounded border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                    {userMessage}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="mb-4">
@@ -598,7 +663,7 @@ export default function Home() {
           <div className="flex flex-wrap gap-3">
             <button
               onClick={handleUpload}
-              disabled={loading || !acceptedTerms}
+              disabled={loading || !acceptedTerms || !loggedIn}
               className="flex-1 min-w-[180px] bg-blue-900 text-white py-2 rounded hover:bg-blue-800 transition font-semibold disabled:opacity-70 disabled:cursor-not-allowed"
             >
               {loading ? "Przetwarzanie..." : "Przetwórz do XML"}
@@ -675,16 +740,14 @@ export default function Home() {
           <div className="bg-white p-6 rounded-xl shadow">
             <h2 className="font-bold text-lg mb-2 text-gray-800">Czym jest KSeF?</h2>
             <p className="text-gray-600 text-sm">
-              Krajowy System e-Faktur to system do wystawiania, przesyłania i
-              przechowywania faktur w ustandaryzowanym formacie XML.
+              Krajowy System e-Faktur to system do wystawiania, przesyłania i przechowywania faktur w ustandaryzowanym formacie XML.
             </p>
           </div>
 
           <div className="bg-white p-6 rounded-xl shadow">
             <h2 className="font-bold text-lg mb-2 text-gray-800">Nasza aplikacja</h2>
             <p className="text-gray-600 text-sm">
-              Aplikacja umożliwia szybkie generowanie plików XML z faktur
-              wgranych jako PDF lub pliki graficzne, bez ręcznego przepisywania danych.
+              Aplikacja umożliwia szybkie generowanie plików XML z faktur wgranych jako PDF lub pliki graficzne, bez ręcznego przepisywania danych.
             </p>
           </div>
         </div>
@@ -953,8 +1016,7 @@ export default function Home() {
         <div className="fixed bottom-0 left-0 right-0 z-50 border-t bg-black text-white">
           <div className="mx-auto max-w-6xl px-4 py-3 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
             <p className="text-sm text-white/90">
-              Ta strona wykorzystuje pliki cookies niezbędne do prawidłowego działania
-              serwisu. Korzystając ze strony, akceptujesz ich użycie.
+              Ta strona wykorzystuje pliki cookies niezbędne do prawidłowego działania serwisu. Korzystając ze strony, akceptujesz ich użycie.
             </p>
 
             <button

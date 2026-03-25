@@ -128,6 +128,25 @@ function cleanJsonText(text: string): string {
   return text.replace(/```json/gi, "").replace(/```/g, "").trim();
 }
 
+function extractOutputText(response: OpenAI.Responses.Response): string {
+  if (typeof response.output_text === "string" && response.output_text.trim()) {
+    return response.output_text.trim();
+  }
+
+  const texts: string[] = [];
+
+  for (const item of response.output ?? []) {
+    if (item.type !== "message") continue;
+    for (const content of item.content ?? []) {
+      if (content.type === "output_text" && content.text) {
+        texts.push(content.text);
+      }
+    }
+  }
+
+  return texts.join("\n").trim();
+}
+
 function escapeXml(value: string | null | undefined): string {
   if (value == null) return "";
   return String(value)
@@ -190,7 +209,7 @@ function normalizeVatRate(value: string | null | undefined): string {
   const cleaned = raw.replace("%", "");
   const num = Number(cleaned);
   if (Number.isNaN(num)) return cleaned;
-  if (num === 7) return "8"; // częsty stary układ / błędny odczyt dla obniżonej stawki
+  if (num === 7) return "8";
   return String(Number.isInteger(num) ? num : Number(num.toFixed(2)));
 }
 
@@ -627,7 +646,7 @@ function buildXml(data: InvoiceData): string {
   const sellerAddress = splitAddress(data.seller_address);
   const buyerAddress = splitAddress(data.buyer_address);
 
-  const paymentMethodCode = "6"; // przelew jako bezpieczny domyślny fallback
+  const paymentMethodCode = "6";
 
   const paymentXml =
     data.paid === true
@@ -859,17 +878,19 @@ Zwróć JSON dokładnie w tej strukturze:
 }`;
 }
 
+type InputContent =
+  | { type: "input_text"; text: string }
+  | { type: "input_image"; image_url: string; detail: "auto" | "low" | "high" }
+  | { type: "input_file"; filename: string; file_data: string };
+
 async function extractInvoiceData(file: File, base64: string): Promise<InvoiceData> {
-  const content: Array<
-    | { type: "input_text"; text: string }
-    | { type: "input_image"; image_url: string }
-    | { type: "input_file"; filename: string; file_data: string }
-  > = [{ type: "input_text", text: buildExtractionPrompt() }];
+  const content: InputContent[] = [{ type: "input_text", text: buildExtractionPrompt() }];
 
   if (file.type.startsWith("image/")) {
     content.push({
       type: "input_image",
       image_url: `data:${file.type};base64,${base64}`,
+      detail: "auto",
     });
   } else {
     content.push({
@@ -884,7 +905,7 @@ async function extractInvoiceData(file: File, base64: string): Promise<InvoiceDa
     input: [{ role: "user", content }],
   });
 
-  const output = cleanJsonText(response.output_text || "");
+  const output = cleanJsonText(extractOutputText(response));
   return JSON.parse(output) as InvoiceData;
 }
 
@@ -910,16 +931,13 @@ Oto kandydat JSON do weryfikacji:
 ${JSON.stringify(firstPassData, null, 2)}
 `;
 
-  const content: Array<
-    | { type: "input_text"; text: string }
-    | { type: "input_image"; image_url: string }
-    | { type: "input_file"; filename: string; file_data: string }
-  > = [{ type: "input_text", text: secondPassPrompt }];
+  const content: InputContent[] = [{ type: "input_text", text: secondPassPrompt }];
 
   if (file.type.startsWith("image/")) {
     content.push({
       type: "input_image",
       image_url: `data:${file.type};base64,${base64}`,
+      detail: "auto",
     });
   } else {
     content.push({
@@ -934,7 +952,7 @@ ${JSON.stringify(firstPassData, null, 2)}
     input: [{ role: "user", content }],
   });
 
-  const output = cleanJsonText(response.output_text || "");
+  const output = cleanJsonText(extractOutputText(response));
   return JSON.parse(output) as InvoiceData;
 }
 

@@ -22,6 +22,16 @@ type MeResponse = {
   };
 };
 
+type CreditsApiResponse = {
+  success?: boolean;
+  message?: string;
+  user?: {
+    id: string;
+    email: string;
+    credits: number;
+  };
+};
+
 const fieldLabels: Record<string, string> = {
   seller_nip: "NIP sprzedawcy",
   seller_name: "Nazwa sprzedawcy",
@@ -84,23 +94,30 @@ export default function Home() {
     return `mailto:${to}?subject=${subject}&body=${body}`;
   }, [contactSubject, contactBody]);
 
+  const updateLoggedInUser = (user: { email: string; credits: number }) => {
+    setLoggedIn(true);
+    setUserEmail(user.email);
+    setCredits(user.credits);
+  };
+
   useEffect(() => {
     const loadMe = async () => {
       try {
         const res = await fetch("/api/auth/me", { cache: "no-store" });
 
-let data;
-try {
-  data = await res.json();
-} catch (error) {
-  console.error("Błąd /api/auth/me:", error);
-  return;
-}
+        let data: MeResponse | null = null;
+        try {
+          data = await res.json();
+        } catch (error) {
+          console.error("Błąd /api/auth/me:", error);
+          return;
+        }
 
-        if (data.loggedIn && data.user) {
-          setLoggedIn(true);
-          setUserEmail(data.user.email);
-          setCredits(data.user.credits);
+        if (data?.loggedIn && data.user) {
+          updateLoggedInUser({
+            email: data.user.email,
+            credits: data.user.credits,
+          });
           setUserMessage(`Zalogowano jako ${data.user.email}`);
         } else {
           setLoggedIn(false);
@@ -151,36 +168,36 @@ try {
   };
 
   const handleSendLoginLink = async () => {
-  try {
-    setUserMessage("");
+    try {
+      setUserMessage("");
 
-    const trimmedEmail = email.trim().toLowerCase();
-    if (!trimmedEmail) {
-      setUserMessage("Podaj adres e-mail.");
-      return;
+      const trimmedEmail = email.trim().toLowerCase();
+      if (!trimmedEmail) {
+        setUserMessage("Podaj adres e-mail.");
+        return;
+      }
+
+      const res = await fetch("/api/auth/send-link", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: trimmedEmail }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data?.success) {
+        setUserMessage(data?.message || "Nie udało się wysłać linku logowania.");
+        return;
+      }
+
+      setUserMessage("Link logowania został wysłany na podany adres e-mail.");
+    } catch (error) {
+      console.error(error);
+      setUserMessage("Wystąpił błąd podczas wysyłania linku logowania.");
     }
-
-    const res = await fetch("/api/auth/send-link", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ email: trimmedEmail }),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok || !data?.success) {
-      setUserMessage(data?.message || "Nie udało się wysłać linku logowania.");
-      return;
-    }
-
-    setUserMessage("Link logowania został wysłany na podany adres e-mail.");
-  } catch (error) {
-    console.error(error);
-    setUserMessage("Wystąpił błąd podczas wysyłania linku logowania.");
-  }
-};
+  };
 
   const handleRefreshSession = async () => {
     try {
@@ -188,18 +205,19 @@ try {
 
       const res = await fetch("/api/auth/me", { cache: "no-store" });
 
-let data;
-try {
-  data = await res.json();
-} catch (error) {
-  console.error("Błąd /api/auth/me:", error);
-  return;
-}
+      let data: MeResponse | null = null;
+      try {
+        data = await res.json();
+      } catch (error) {
+        console.error("Błąd /api/auth/me:", error);
+        return;
+      }
 
-      if (data.loggedIn && data.user) {
-        setLoggedIn(true);
-        setUserEmail(data.user.email);
-        setCredits(data.user.credits);
+      if (data?.loggedIn && data.user) {
+        updateLoggedInUser({
+          email: data.user.email,
+          credits: data.user.credits,
+        });
         setUserMessage(`Zalogowano jako ${data.user.email}`);
       } else {
         setLoggedIn(false);
@@ -210,6 +228,73 @@ try {
     } catch (error) {
       console.error(error);
       setUserMessage("Nie udało się odświeżyć sesji.");
+    }
+  };
+
+  const handleRefreshCredits = async () => {
+    try {
+      setUserMessage("");
+
+      if (!userEmail) {
+        setUserMessage("Brak adresu e-mail zalogowanego użytkownika.");
+        return;
+      }
+
+      const res = await fetch("/api/user/credits", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: userEmail }),
+      });
+
+      const data: CreditsApiResponse = await res.json();
+
+      if (!res.ok || !data?.success || !data.user) {
+        setUserMessage(data?.message || "Nie udało się pobrać kredytów.");
+        return;
+      }
+
+      setCredits(data.user.credits);
+      setUserMessage(`Aktualny stan kredytów: ${data.user.credits}`);
+    } catch (error) {
+      console.error(error);
+      setUserMessage("Wystąpił błąd podczas pobierania kredytów.");
+    }
+  };
+
+  const handleAddTestCredits = async (creditsToAdd = 30) => {
+    try {
+      setUserMessage("");
+
+      if (!userEmail) {
+        setUserMessage("Brak adresu e-mail zalogowanego użytkownika.");
+        return;
+      }
+
+      const res = await fetch("/api/user/add-credits", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: userEmail,
+          credits: creditsToAdd,
+        }),
+      });
+
+      const data: CreditsApiResponse = await res.json();
+
+      if (!res.ok || !data?.success || !data.user) {
+        setUserMessage(data?.message || "Nie udało się dodać kredytów.");
+        return;
+      }
+
+      setCredits(data.user.credits);
+      setUserMessage(`Dodano ${creditsToAdd} kredytów. Aktualny stan: ${data.user.credits}`);
+    } catch (error) {
+      console.error(error);
+      setUserMessage("Wystąpił błąd podczas dodawania kredytów.");
     }
   };
 
@@ -548,7 +633,7 @@ try {
                 </div>
 
                 <div className="text-xs text-gray-500">
-                Po kliknięciu przycisku wyślemy link logowania na podany adres e-mail.
+                  Po kliknięciu przycisku wyślemy link logowania na podany adres e-mail.
                 </div>
 
                 {userMessage && (
@@ -568,6 +653,34 @@ try {
                     Aktualna liczba kredytów: <span className="text-blue-900">{credits}</span>
                   </div>
                 )}
+
+                <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+                  <div className="text-sm font-semibold text-blue-900 mb-2">
+                    Zarządzanie kredytami
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleRefreshCredits}
+                      className="rounded border border-blue-900 bg-white px-4 py-2 text-sm font-semibold text-blue-900 hover:bg-blue-50"
+                    >
+                      Sprawdź kredyty
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleAddTestCredits(30)}
+                      className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+                    >
+                      Dodaj testowo 30 kredytów
+                    </button>
+                  </div>
+
+                  <div className="mt-2 text-xs text-blue-900/80">
+                    To jest sekcja testowa. Później możesz tu podpiąć prawdziwe płatności.
+                  </div>
+                </div>
 
                 <div className="flex flex-wrap gap-2">
                   <button

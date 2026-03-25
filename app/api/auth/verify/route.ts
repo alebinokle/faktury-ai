@@ -74,9 +74,11 @@ export async function GET(req: Request) {
       expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
 
-    return Response.redirect("http://localhost:3000");
+    const appUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || "https://ksefxml.pl";
+
+    return Response.redirect(appUrl);
   } catch (error) {
     console.error("BŁĄD VERIFY:", error);
     return new Response("Błąd podczas weryfikacji logowania.", { status: 500 });
   }
-} 
+}

@@ -23,11 +23,14 @@ type InvoiceItem = {
   quantity: string | null;
   unit: string | null;
   unit_price: string | null;
+  unit_price_before_discount?: string | null;
+  unit_price_gross?: string | null;
+  discount_percent?: string | null;
+  discount_amount?: string | null;
   net_total: string | null;
   vat_rate: string | null;
   vat_total: string | null;
   gross_total: string | null;
-  unit_price_gross?: string | null;
   pkwiu?: string | null;
   gtu?: string | null;
   code?: string | null;
@@ -72,6 +75,13 @@ type InvoiceData = {
   unit_price?: string | null;
 };
 
+type LineIssue = { line: number; fields: string[] };
+
+type InputContent =
+  | { type: "input_text"; text: string }
+  | { type: "input_image"; image_url: string; detail: "auto" | "low" | "high" }
+  | { type: "input_file"; filename: string; file_data: string };
+
 const fieldLabels: Record<string, string> = {
   seller_nip: "NIP sprzedawcy",
   seller_name: "Nazwa sprzedawcy",
@@ -80,23 +90,28 @@ const fieldLabels: Record<string, string> = {
   buyer_nip: "NIP nabywcy",
   buyer_name: "Nazwa nabywcy",
   buyer_address: "Adres nabywcy",
+  recipient_name: "Nazwa odbiorcy",
+  recipient_address: "Adres odbiorcy",
+  recipient_nip: "NIP odbiorcy",
   invoice_number: "Numer faktury",
   issue_date: "Data wystawienia",
   sale_date: "Data sprzedaży",
+  currency: "Waluta",
+  place_of_issue: "Miejsce wystawienia",
   net_total: "Kwota netto",
   vat_total: "Kwota VAT",
   gross_total: "Kwota brutto",
   payment_due_date: "Termin płatności",
   payment_date: "Data zapłaty",
   bank_account: "Numer rachunku bankowego",
-  paid: "Informacja o zapłacie",
+  payment_method: "Forma płatności",
+  paid: "Czy zapłacono",
   items: "Pozycje faktury",
 };
 
 async function getUserFromSession() {
   const cookieStore = await cookies();
   const sessionToken = cookieStore.get("session_token")?.value;
-
   if (!sessionToken) return null;
 
   const session = await prisma.session.findUnique({
@@ -125,17 +140,12 @@ async function getUserFromSession() {
   return session.user;
 }
 
-function cleanJsonText(text: string): string {
-  return text.replace(/```json/gi, "").replace(/```/g, "").trim();
-}
-
 function extractOutputText(response: OpenAI.Responses.Response): string {
   if (typeof response.output_text === "string" && response.output_text.trim()) {
     return response.output_text.trim();
   }
 
   const texts: string[] = [];
-
   for (const item of response.output ?? []) {
     if (item.type !== "message") continue;
     for (const content of item.content ?? []) {
@@ -146,6 +156,44 @@ function extractOutputText(response: OpenAI.Responses.Response): string {
   }
 
   return texts.join("\n").trim();
+}
+
+function extractFirstJsonObject(text: string): string {
+  const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+  const start = cleaned.indexOf("{");
+  if (start === -1) throw new Error("Brak JSON w odpowiedzi modelu.");
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return cleaned.slice(start, i + 1);
+    }
+  }
+
+  throw new Error("Nie udało się wyciąć poprawnego JSON.");
+}
+
+function parseInvoiceJson(rawText: string): InvoiceData {
+  return JSON.parse(extractFirstJsonObject(rawText)) as InvoiceData;
 }
 
 function escapeXml(value: string | null | undefined): string {
@@ -225,63 +273,36 @@ function normalizeCurrency(value: string | null | undefined): string {
 
 function normalizeDate(value: string | null | undefined): string {
   if (!value) return "";
-
   const raw = String(value).trim();
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
 
   const dmy = raw.match(/^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})$/);
-  if (dmy) {
-    const dd = dmy[1].padStart(2, "0");
-    const mm = dmy[2].padStart(2, "0");
-    const yyyy = dmy[3];
-    return `${yyyy}-${mm}-${dd}`;
-  }
+  if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, "0")}-${dmy[1].padStart(2, "0")}`;
 
   const ymd = raw.match(/^(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})$/);
-  if (ymd) {
-    const yyyy = ymd[1];
-    const mm = ymd[2].padStart(2, "0");
-    const dd = ymd[3].padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
-  }
+  if (ymd) return `${ymd[1]}-${ymd[2].padStart(2, "0")}-${ymd[3].padStart(2, "0")}`;
 
   const parsed = new Date(raw);
-  if (!Number.isNaN(parsed.getTime())) {
-    return parsed.toISOString().slice(0, 10);
-  }
+  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
 
   return "";
 }
 
 function formatMidnightZulu(dateValue: string | null | undefined): string {
   const date = normalizeDate(dateValue);
-  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return `${date}T00:00:00Z`;
-  }
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) return `${date}T00:00:00Z`;
 
   const now = new Date();
-  const yyyy = now.getUTCFullYear();
-  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(now.getUTCDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}T00:00:00Z`;
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}T00:00:00Z`;
 }
 
 function splitAddress(address: string | null | undefined): { line1: string; line2: string } {
   const raw = normalizeSpaces(address);
   if (!raw) return { line1: "", line2: "" };
 
-  const parts = raw
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean);
-
-  if (parts.length >= 2) {
-    return {
-      line1: parts[0],
-      line2: parts.slice(1).join(", "),
-    };
-  }
+  const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length >= 2) return { line1: parts[0], line2: parts.slice(1).join(", ") };
 
   const postalMatch = raw.match(/^(.*?)(\d{2}-\d{3}.*)$/);
   if (postalMatch) {
@@ -333,11 +354,14 @@ function normalizeItem(item: Partial<InvoiceItem>): InvoiceItem {
     quantity: normalizeQuantity(item.quantity),
     unit: normalizeSpaces(item.unit) || "szt",
     unit_price: normalizeDecimal(item.unit_price, 2) || null,
+    unit_price_before_discount: normalizeDecimal(item.unit_price_before_discount, 2) || null,
+    unit_price_gross: normalizeDecimal(item.unit_price_gross, 2) || null,
+    discount_percent: normalizeDecimal(item.discount_percent, 2) || null,
+    discount_amount: normalizeDecimal(item.discount_amount, 2) || null,
     net_total: normalizeDecimal(item.net_total, 2) || null,
     vat_rate: normalizeVatRate(item.vat_rate) || null,
     vat_total: normalizeDecimal(item.vat_total, 2) || null,
     gross_total: normalizeDecimal(item.gross_total, 2) || null,
-    unit_price_gross: normalizeDecimal(item.unit_price_gross, 2) || null,
     pkwiu: normalizeSpaces(item.pkwiu) || null,
     gtu: normalizeSpaces(item.gtu) || null,
     code: normalizeSpaces(item.code) || null,
@@ -348,7 +372,7 @@ function normalizeItems(items: Partial<InvoiceItem>[] | null | undefined): Invoi
   if (!Array.isArray(items)) return [];
   return items
     .map(normalizeItem)
-    .filter((item) => item.item_name || item.net_total || item.gross_total || item.unit_price || item.quantity || item.code || item.pkwiu);
+    .filter((item) => item.item_name || item.net_total || item.gross_total || item.unit_price || item.quantity);
 }
 
 function buildLegacySingleItem(data: InvoiceData): InvoiceItem[] {
@@ -362,7 +386,6 @@ function buildLegacySingleItem(data: InvoiceData): InvoiceItem[] {
     data.vat_rate;
 
   if (!hasLegacy) return [];
-
   return [
     normalizeItem({
       item_name: data.item_name ?? null,
@@ -379,163 +402,22 @@ function buildLegacySingleItem(data: InvoiceData): InvoiceItem[] {
 
 function ensureItems(data: InvoiceData): InvoiceData {
   const normalizedItems = normalizeItems(data.items);
-  if (normalizedItems.length > 0) {
-    return { ...data, items: normalizedItems };
-  }
+  if (normalizedItems.length > 0) return { ...data, items: normalizedItems };
   return { ...data, items: buildLegacySingleItem(data) };
 }
 
-function repairSingleItemMath(item: InvoiceItem): {
-  item: InvoiceItem;
-  math_problem: boolean;
-  repaired: boolean;
-} {
-  const result = { ...item };
-  let repaired = false;
-  let math_problem = false;
+function mergeManualItem(baseItem: InvoiceItem | undefined, rawManual: Record<string, unknown> | undefined): InvoiceItem {
+  const source = baseItem ?? normalizeItem({});
+  if (!rawManual) return source;
 
-  let qty = toNum(result.quantity);
-  let unitPrice = toNum(result.unit_price);
-  let net = toNum(result.net_total);
-  let vat = toNum(result.vat_total);
-  let gross = toNum(result.gross_total);
-
-  const rateRaw = normalizeVatRate(result.vat_rate);
-  const rateNum = Number(rateRaw);
-
-  const hasQty = !Number.isNaN(qty) && qty > 0;
-  const hasUnitPrice = !Number.isNaN(unitPrice) && unitPrice >= 0;
-  const hasNet = !Number.isNaN(net) && net >= 0;
-  const hasGross = !Number.isNaN(gross) && gross >= 0;
-
-  if (Number.isNaN(unitPrice) && hasQty && hasNet) {
-    const derivedUnitPrice = round2(net / qty);
-    if (derivedUnitPrice >= 0) {
-      result.unit_price = derivedUnitPrice.toFixed(2);
-      unitPrice = derivedUnitPrice;
-      repaired = true;
-    }
+  const merged: Partial<InvoiceItem> = { ...source };
+  for (const key of Object.keys(rawManual)) {
+    const value = rawManual[key];
+    if (value === null || value === undefined) continue;
+    if (typeof value === "string" && value.trim() === "") continue;
+    (merged as Record<string, unknown>)[key] = value;
   }
-
-  if (Number.isNaN(vat) && hasNet && hasGross) {
-    result.vat_total = round2(gross - net).toFixed(2);
-    vat = toNum(result.vat_total);
-    repaired = true;
-  }
-
-  if ((!result.net_total || result.net_total === "") && hasQty && hasUnitPrice) {
-    result.net_total = round2(qty * unitPrice).toFixed(2);
-    net = toNum(result.net_total);
-    repaired = true;
-  }
-
-  if ((!result.vat_total || result.vat_total === "") && !Number.isNaN(net) && !Number.isNaN(rateNum)) {
-    result.vat_total = round2((net * rateNum) / 100).toFixed(2);
-    vat = toNum(result.vat_total);
-    repaired = true;
-  }
-
-  if ((!result.gross_total || result.gross_total === "") && !Number.isNaN(net) && !Number.isNaN(vat)) {
-    result.gross_total = round2(net + vat).toFixed(2);
-    gross = toNum(result.gross_total);
-    repaired = true;
-  }
-
-  if (hasQty && hasUnitPrice && hasNet) {
-    const calculatedNet = round2(qty * unitPrice);
-
-    if (!nearlyEqual(calculatedNet, net)) {
-      math_problem = true;
-
-      const derivedUnitPrice = round2(net / qty);
-      if (derivedUnitPrice >= 0 && nearlyEqual(round2(qty * derivedUnitPrice), net)) {
-        result.unit_price = derivedUnitPrice.toFixed(2);
-        unitPrice = derivedUnitPrice;
-        repaired = true;
-        math_problem = false;
-      }
-
-      if (math_problem && unitPrice > 0) {
-        const derivedQty = Number((net / unitPrice).toFixed(6));
-        if (derivedQty > 0 && nearlyEqual(round2(derivedQty * unitPrice), net)) {
-          result.quantity = derivedQty.toFixed(6);
-          qty = derivedQty;
-          repaired = true;
-          math_problem = false;
-        }
-      }
-    }
-  }
-
-  if (!Number.isNaN(net) && !Number.isNaN(vat) && !Number.isNaN(gross)) {
-    if (!nearlyEqual(round2(net + vat), gross)) {
-      math_problem = true;
-    }
-  }
-
-  return { item: result, math_problem, repaired };
-}
-
-function validateAndRepairItems(items: InvoiceItem[]): {
-  items: InvoiceItem[];
-  math_problem: boolean;
-  repaired: boolean;
-  line_issues: Array<{ line: number; fields: string[] }>;
-} {
-  let repaired = false;
-  let math_problem = false;
-  const line_issues: Array<{ line: number; fields: string[] }> = [];
-
-  const repairedItems = items.map((item, index) => {
-    const check = repairSingleItemMath(item);
-    if (check.repaired) repaired = true;
-
-    if (check.math_problem) {
-      math_problem = true;
-      line_issues.push({
-        line: index + 1,
-        fields: ["quantity", "unit_price", "net_total", "vat_total", "gross_total"],
-      });
-    }
-
-    return check.item;
-  });
-
-  return { items: repairedItems, math_problem, repaired, line_issues };
-}
-
-function computeTotalsFromItems(items: InvoiceItem[]): {
-  net_total: string | null;
-  vat_total: string | null;
-  gross_total: string | null;
-} {
-  if (!items.length) {
-    return { net_total: null, vat_total: null, gross_total: null };
-  }
-
-  let net = 0;
-  let vat = 0;
-  let gross = 0;
-
-  for (const item of items) {
-    const itemNet = toNum(item.net_total);
-    const itemVat = toNum(item.vat_total);
-    const itemGross = toNum(item.gross_total);
-
-    if (!Number.isNaN(itemNet)) net += itemNet;
-    if (!Number.isNaN(itemVat)) vat += itemVat;
-    if (!Number.isNaN(itemGross)) gross += itemGross;
-  }
-
-  if (gross === 0 && net >= 0 && vat >= 0) {
-    gross = net + vat;
-  }
-
-  return {
-    net_total: round2(net).toFixed(2),
-    vat_total: round2(vat).toFixed(2),
-    gross_total: round2(gross).toFixed(2),
-  };
+  return normalizeItem(merged);
 }
 
 function mergeManualData(baseData: InvoiceData, manualData: Record<string, unknown>): InvoiceData {
@@ -543,7 +425,13 @@ function mergeManualData(baseData: InvoiceData, manualData: Record<string, unkno
 
   for (const [key, value] of Object.entries(manualData)) {
     if (key === "items" && Array.isArray(value)) {
-      merged.items = normalizeItems(value as Partial<InvoiceItem>[]);
+      const manualItems = value as Record<string, unknown>[];
+      const maxLength = Math.max(baseData.items?.length || 0, manualItems.length);
+      const mergedItems: InvoiceItem[] = [];
+      for (let i = 0; i < maxLength; i++) {
+        mergedItems.push(mergeManualItem(baseData.items?.[i], manualItems[i]));
+      }
+      merged.items = mergedItems;
       continue;
     }
 
@@ -556,7 +444,14 @@ function mergeManualData(baseData: InvoiceData, manualData: Record<string, unkno
       continue;
     }
 
-    (merged as Record<string, unknown>)[key] = typeof value === "string" ? value.trim() || null : value;
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) continue;
+      (merged as Record<string, unknown>)[key] = trimmed;
+      continue;
+    }
+
+    (merged as Record<string, unknown>)[key] = value;
   }
 
   return merged;
@@ -570,52 +465,194 @@ function coalesce(...values: Array<string | null | undefined>): string | null {
   return null;
 }
 
+function applyDiscountMath(item: InvoiceItem): InvoiceItem {
+  const result = { ...item };
+
+  let qty = toNum(result.quantity);
+  let unitAfter = toNum(result.unit_price);
+  let unitBefore = toNum(result.unit_price_before_discount);
+  let discountPercent = toNum(result.discount_percent);
+  let discountAmount = toNum(result.discount_amount);
+  let net = toNum(result.net_total);
+
+  const hasQty = !Number.isNaN(qty) && qty > 0;
+  const hasNet = !Number.isNaN(net) && net >= 0;
+
+  if (hasQty && hasNet) {
+    const derivedAfter = round2(net / qty);
+    if (Number.isNaN(unitAfter) || !nearlyEqual(unitAfter, derivedAfter, 0.02)) {
+      result.unit_price = derivedAfter.toFixed(2);
+      unitAfter = derivedAfter;
+    }
+  }
+
+  if (!Number.isNaN(unitBefore) && !Number.isNaN(unitAfter)) {
+    const derivedDiscountAmount = round2(unitBefore - unitAfter);
+    if (derivedDiscountAmount >= 0 && (Number.isNaN(discountAmount) || !nearlyEqual(discountAmount, derivedDiscountAmount, 0.02))) {
+      result.discount_amount = derivedDiscountAmount.toFixed(2);
+      discountAmount = derivedDiscountAmount;
+    }
+
+    if (unitBefore > 0) {
+      const derivedDiscountPercent = round2((derivedDiscountAmount / unitBefore) * 100);
+      if (derivedDiscountPercent >= 0 && (Number.isNaN(discountPercent) || !nearlyEqual(discountPercent, derivedDiscountPercent, 0.2))) {
+        result.discount_percent = derivedDiscountPercent.toFixed(2);
+      }
+    }
+  }
+
+  if (Number.isNaN(unitBefore) && !Number.isNaN(unitAfter) && !Number.isNaN(discountPercent) && discountPercent >= 0 && discountPercent < 100) {
+    result.unit_price_before_discount = round2(unitAfter / (1 - discountPercent / 100)).toFixed(2);
+  }
+
+  if (Number.isNaN(unitBefore) && !Number.isNaN(unitAfter) && !Number.isNaN(discountAmount)) {
+    result.unit_price_before_discount = round2(unitAfter + discountAmount).toFixed(2);
+  }
+
+  return result;
+}
+
+function repairSingleItemMath(item: InvoiceItem): { item: InvoiceItem; math_problem: boolean; repaired: boolean } {
+  let result = applyDiscountMath(item);
+  let repaired = JSON.stringify(result) !== JSON.stringify(item);
+  let math_problem = false;
+
+  let qty = toNum(result.quantity);
+  let unitPrice = toNum(result.unit_price);
+  let net = toNum(result.net_total);
+  let vat = toNum(result.vat_total);
+  let gross = toNum(result.gross_total);
+  const rateNum = Number(normalizeVatRate(result.vat_rate));
+
+  const hasQty = !Number.isNaN(qty) && qty > 0;
+  const hasUnitPrice = !Number.isNaN(unitPrice) && unitPrice >= 0;
+  const hasNet = !Number.isNaN(net) && net >= 0;
+  const hasGross = !Number.isNaN(gross) && gross >= 0;
+
+  if (!hasUnitPrice && hasQty && hasNet) {
+    result.unit_price = round2(net / qty).toFixed(2);
+    unitPrice = toNum(result.unit_price);
+    repaired = true;
+  }
+
+  if (!hasNet && hasQty && hasUnitPrice) {
+    result.net_total = round2(qty * unitPrice).toFixed(2);
+    net = toNum(result.net_total);
+    repaired = true;
+  }
+
+  if ((result.vat_total == null || result.vat_total === "") && hasNet && hasGross) {
+    result.vat_total = round2(gross - net).toFixed(2);
+    vat = toNum(result.vat_total);
+    repaired = true;
+  }
+
+  if ((result.vat_total == null || result.vat_total === "") && !Number.isNaN(net) && !Number.isNaN(rateNum)) {
+    result.vat_total = round2((net * rateNum) / 100).toFixed(2);
+    vat = toNum(result.vat_total);
+    repaired = true;
+  }
+
+  if ((result.gross_total == null || result.gross_total === "") && !Number.isNaN(net) && !Number.isNaN(vat)) {
+    result.gross_total = round2(net + vat).toFixed(2);
+    gross = toNum(result.gross_total);
+    repaired = true;
+  }
+
+  if (hasQty && hasUnitPrice && hasNet && !nearlyEqual(round2(qty * unitPrice), net, 0.2)) {
+    math_problem = true;
+  }
+
+  if (!Number.isNaN(net) && !Number.isNaN(vat) && !Number.isNaN(gross) && !nearlyEqual(round2(net + vat), gross, 0.2)) {
+    math_problem = true;
+  }
+
+  return { item: result, math_problem, repaired };
+}
+
+function validateAndRepairItems(items: InvoiceItem[]) {
+  let repaired = false;
+  let math_problem = false;
+  const line_issues: LineIssue[] = [];
+
+  const repairedItems = items.map((item, index) => {
+    const check = repairSingleItemMath(item);
+    if (check.repaired) repaired = true;
+    if (check.math_problem) {
+      math_problem = true;
+      line_issues.push({
+        line: index + 1,
+        fields: ["quantity", "unit_price", "net_total", "vat_total", "gross_total"],
+      });
+    }
+    return check.item;
+  });
+
+  return { items: repairedItems, math_problem, repaired, line_issues };
+}
+
+function computeTotalsFromItems(items: InvoiceItem[]) {
+  if (!items.length) return { net_total: null, vat_total: null, gross_total: null };
+
+  let net = 0, vat = 0, gross = 0;
+
+  for (const item of items) {
+    const itemNet = toNum(item.net_total);
+    const itemVat = toNum(item.vat_total);
+    const itemGross = toNum(item.gross_total);
+    if (!Number.isNaN(itemNet)) net += itemNet;
+    if (!Number.isNaN(itemVat)) vat += itemVat;
+    if (!Number.isNaN(itemGross)) gross += itemGross;
+  }
+
+  if (gross === 0 && net >= 0 && vat >= 0) gross = net + vat;
+
+  return {
+    net_total: round2(net).toFixed(2),
+    vat_total: round2(vat).toFixed(2),
+    gross_total: round2(gross).toFixed(2),
+  };
+}
+
 function finalizeData(raw: InvoiceData): InvoiceData {
   let data: InvoiceData = ensureItems(raw);
 
   data.seller_nip = normalizeNip(data.seller_nip) || null;
-  data.buyer_nip = normalizeNip(data.buyer_nip || data.recipient_nip) || null;
+  data.buyer_nip = normalizeNip(data.buyer_nip) || null;
+  data.recipient_nip = normalizeNip(data.recipient_nip) || null;
   data.seller_regon = normalizeRegon(data.seller_regon) || null;
 
   data.seller_name = coalesce(data.seller_name) ?? null;
   data.seller_address = coalesce(data.seller_address) ?? null;
-
-  data.buyer_name = coalesce(data.buyer_name, data.recipient_name) ?? null;
-  data.buyer_address = coalesce(data.buyer_address, data.recipient_address) ?? null;
+  data.buyer_name = coalesce(data.buyer_name) ?? null;
+  data.buyer_address = coalesce(data.buyer_address) ?? null;
+  data.recipient_name = coalesce(data.recipient_name) ?? null;
+  data.recipient_address = coalesce(data.recipient_address) ?? null;
 
   data.invoice_number = coalesce(data.invoice_number) ?? null;
   data.issue_date = normalizeDate(data.issue_date) || null;
   data.sale_date = normalizeDate(data.sale_date || data.issue_date) || null;
-
   data.payment_due_date = normalizeDate(data.payment_due_date) || null;
   data.payment_date = normalizeDate(data.payment_date) || null;
   data.bank_account = normalizeBankAccount(data.bank_account) || null;
   data.currency = normalizeCurrency(data.currency);
 
-  if (!data.sale_date && data.issue_date) {
-    data.sale_date = data.issue_date;
+  if (!data.sale_date && data.issue_date) data.sale_date = data.issue_date;
+  if (data.paid == null) {
+    if (data.payment_date) data.paid = true;
+    else if (data.payment_due_date) data.paid = false;
   }
 
   const itemCheck = validateAndRepairItems(data.items);
   data.items = itemCheck.items;
 
   const totalsFromItems = computeTotalsFromItems(data.items);
-
   data.net_total = normalizeDecimal(data.net_total, 2) || totalsFromItems.net_total;
   data.vat_total = normalizeDecimal(data.vat_total, 2) || totalsFromItems.vat_total;
   data.gross_total = normalizeDecimal(data.gross_total, 2) || totalsFromItems.gross_total;
 
   if (!data.gross_total && data.net_total && data.vat_total) {
-    const net = Number(data.net_total);
-    const vat = Number(data.vat_total);
-    if (!Number.isNaN(net) && !Number.isNaN(vat)) {
-      data.gross_total = (net + vat).toFixed(2);
-    }
-  }
-
-  if (data.paid == null) {
-    if (data.payment_date) data.paid = true;
-    else if (data.payment_due_date) data.paid = false;
+    data.gross_total = round2(Number(data.net_total) + Number(data.vat_total)).toFixed(2);
   }
 
   return data;
@@ -655,6 +692,31 @@ function buildVatSummaryTags(items: InvoiceItem[]): string {
   return chunks.join("");
 }
 
+function buildPodmiot3Xml(data: InvoiceData): string {
+  const recipientName = normalizeSpaces(data.recipient_name);
+  const recipientAddressRaw = normalizeSpaces(data.recipient_address);
+  const recipientNip = normalizeNip(data.recipient_nip);
+  const hasRecipient = !!(recipientName || recipientAddressRaw || recipientNip);
+
+  if (!hasRecipient) return "";
+
+  const recipientAddress = splitAddress(recipientAddressRaw);
+
+  return `
+  <Podmiot3>
+    <DaneIdentyfikacyjne>
+      ${tag("NIP", recipientNip)}
+      ${tag("Nazwa", recipientName)}
+    </DaneIdentyfikacyjne>
+    <Adres>
+      <KodKraju>PL</KodKraju>
+      ${tag("AdresL1", recipientAddress.line1)}
+      ${tag("AdresL2", recipientAddress.line2)}
+    </Adres>
+    <Rola>2</Rola>
+  </Podmiot3>`;
+}
+
 function buildXml(data: InvoiceData): string {
   const sellerNip = normalizeNip(data.seller_nip);
   const buyerNip = normalizeNip(data.buyer_nip);
@@ -671,25 +733,19 @@ function buildXml(data: InvoiceData): string {
   const sellerAddress = splitAddress(data.seller_address);
   const buyerAddress = splitAddress(data.buyer_address);
 
-  const paymentMethodCode = "6";
-
   const paymentXml =
     data.paid === true
       ? [
           `<Zaplacono>1</Zaplacono>`,
           paymentDate ? `<DataZaplaty>${escapeXml(paymentDate)}</DataZaplaty>` : "",
-          `<FormaPlatnosci>${paymentMethodCode}</FormaPlatnosci>`,
+          `<FormaPlatnosci>6</FormaPlatnosci>`,
           bankAccount ? `<RachunekBankowy><NrRB>${escapeXml(bankAccount)}</NrRB></RachunekBankowy>` : "",
-        ]
-          .filter(Boolean)
-          .join("")
+        ].filter(Boolean).join("")
       : [
           paymentDueDate ? `<TerminPlatnosci><Termin>${escapeXml(paymentDueDate)}</Termin></TerminPlatnosci>` : "",
-          `<FormaPlatnosci>${paymentMethodCode}</FormaPlatnosci>`,
+          `<FormaPlatnosci>6</FormaPlatnosci>`,
           bankAccount ? `<RachunekBankowy><NrRB>${escapeXml(bankAccount)}</NrRB></RachunekBankowy>` : "",
-        ]
-          .filter(Boolean)
-          .join("");
+        ].filter(Boolean).join("");
 
   const stopkaXml = sellerRegon
     ? `
@@ -699,6 +755,8 @@ function buildXml(data: InvoiceData): string {
     </Rejestry>
   </Stopka>`
     : "";
+
+  const podmiot3Xml = buildPodmiot3Xml(data);
 
   const itemsXml = data.items
     .map((item, index) => {
@@ -725,15 +783,13 @@ function buildXml(data: InvoiceData): string {
     })
     .join("");
 
-  const vatSummaryXml = buildVatSummaryTags(data.items);
-
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Faktura xmlns:etd="http://crd.gov.pl/xml/schematy/dziedzinowe/mf/2022/01/05/eD/DefinicjeTypy/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://crd.gov.pl/wzor/2025/06/25/13775/">
   <Naglowek>
     <KodFormularza kodSystemowy="FA (3)" wersjaSchemy="1-0E">FA</KodFormularza>
     <WariantFormularza>3</WariantFormularza>
     <DataWytworzeniaFa>${escapeXml(formatMidnightZulu(issueDate))}</DataWytworzeniaFa>
-    <SystemInfo>Wygenerowano na ksefxml.pl</SystemInfo>
+    <SystemInfo>ksefxml.pl</SystemInfo>
   </Naglowek>
   <Podmiot1>
     <DaneIdentyfikacyjne>
@@ -758,29 +814,23 @@ function buildXml(data: InvoiceData): string {
     </Adres>
     <JST>2</JST>
     <GV>2</GV>
-  </Podmiot2>
+  </Podmiot2>${podmiot3Xml}
   <Fa>
     <KodWaluty>${escapeXml(currency)}</KodWaluty>
     ${tag("P_1", issueDate)}
     ${tag("P_2", data.invoice_number)}
     ${tag("P_6", saleDate)}
-    ${vatSummaryXml}
+    ${buildVatSummaryTags(data.items)}
     ${tag("P_15", grossTotal)}
     <Adnotacje>
       <P_16>2</P_16>
       <P_17>2</P_17>
       <P_18>2</P_18>
       <P_18A>2</P_18A>
-      <Zwolnienie>
-        <P_19N>1</P_19N>
-      </Zwolnienie>
-      <NoweSrodkiTransportu>
-        <P_22N>1</P_22N>
-      </NoweSrodkiTransportu>
+      <Zwolnienie><P_19N>1</P_19N></Zwolnienie>
+      <NoweSrodkiTransportu><P_22N>1</P_22N></NoweSrodkiTransportu>
       <P_23>2</P_23>
-      <PMarzy>
-        <P_PMarzyN>1</P_PMarzyN>
-      </PMarzy>
+      <PMarzy><P_PMarzyN>1</P_PMarzyN></PMarzy>
     </Adnotacje>
     <RodzajFaktury>VAT</RodzajFaktury>${itemsXml}
     <Platnosc>${paymentXml}</Platnosc>
@@ -792,80 +842,22 @@ function buildExtractionPrompt(): string {
   return `
 Wyciągnij dane z faktury i zwróć WYŁĄCZNIE czysty JSON.
 
-CEL:
-Masz poprawnie odczytać polskie faktury w bardzo różnych układach:
-- klasyczne faktury VAT
-- faktury z blokami Sprzedawca / Nabywca / Odbiorca
-- faktury z tabelą pozycji w różnych kolejnościach kolumn
-- faktury ze starym layoutem, kodami PKWiU/GTU/kodami towarów
-- faktury PDF lub zdjęcia/skany
-- faktury z pozycjami wielowierszowymi
-- faktury, gdzie netto i brutto bywają podawane w tej samej pozycji jedna pod drugą
-
-ZASADY OGÓLNE:
+BARDZO WAŻNE:
+- buyer_* = dane Nabywcy
+- recipient_* = dane Odbiorcy, jeśli występuje osobno
+- jeśli dokument ma osobne sekcje NABYWCA i ODBIORCA, nie łącz ich
+- recipient_name, recipient_address, recipient_nip mają zostać zwrócone osobno
+- w XML recipient_* zostanie mapowany do Podmiot3 z Rola=2
 - nie zgaduj danych
-- jeśli czegoś nie ma na fakturze, ustaw null
-- analizuj CAŁĄ fakturę: nagłówek, bloki kontrahentów, tabelę pozycji, sekcję płatności, stopkę
-- zwróć tylko JSON, bez komentarzy i bez markdown
-- seller_nip i buyer_nip zwracaj bez prefiksu kraju
-- buyer_nip ma być NIP-em NABYWCY, nie numerem klienta, nie numerem odbiorcy wewnętrznym
-- jeżeli na dokumencie występują jednocześnie "Nabywca" i "Odbiorca", to:
-  - buyer_* = dane nabywcy
-  - recipient_* = dane odbiorcy
-- jeśli brakuje bloku "Nabywca", ale jest tylko jeden blok klienta po stronie kupującego, użyj go jako buyer_*
-- jeśli jest informacja o zapłacie, opłacono, saldo 0, do zapłaty 0, ustaw paid=true
-- jeśli jest termin płatności, ale brak informacji o opłaceniu, ustaw paid=false
-- kwoty zwracaj bez waluty
-- currency zwracaj jako kod, np. PLN, EUR, USD
+- jeśli czegoś nie ma, ustaw null
+- jeśli występuje rabat:
+  - unit_price = cena netto po rabacie
+  - unit_price_before_discount = cena netto przed rabatem
+  - discount_percent = rabat %
+  - discount_amount = rabat kwotowy
+- zwróć wyłącznie JSON
 
-ROZPOZNAWANIE PÓL:
-- numer faktury: "Faktura nr", "Nr", "FV", "Invoice", "Faktura VAT nr"
-- data wystawienia: "Data wystawienia", "Wystawiono dnia", "Wystawiono", "Data faktury"
-- data sprzedaży: "Data sprzedaży", "Sprzedaż", "Data dostawy", "Data dokonania dostawy", "Data wykonania usługi"
-- place_of_issue: miejsce wystawienia, np. miasto obok daty wystawienia
-- bank_account: numer rachunku / konto bankowe / rachunek bankowy
-- payment_due_date: termin płatności
-- payment_date: data zapłaty
-- payment_method: przelew / gotówka / karta / pobranie
-- seller_name / seller_address / seller_nip: blok sprzedawcy / wystawcy
-- buyer_name / buyer_address / buyer_nip: blok nabywcy / klienta / kupującego
-- recipient_name / recipient_address / recipient_nip: blok odbiorcy, jeśli występuje osobno
-- seller_regon: tylko jeśli faktycznie widoczny na dokumencie
-
-BARDZO WAŻNE DLA TABELI POZYCJI:
-- obsługuj WIELE pozycji faktury
-- zwracaj wszystkie pozycje w tablicy "items"
-- NIE myl kolumn:
-  - PKWiU / GTU / kod / indeks / symbol / materiał / SKU to NIE jest ilość
-  - ilość to osobna kolumna
-  - jednostka (Jm, j.m., jm, unit) to osobna kolumna
-  - cena netto / cena jedn. netto / cena po rabacie to osobna kolumna
-  - wartość netto to osobna kolumna
-  - VAT / stawka VAT to osobna kolumna
-  - kwota VAT to osobna kolumna
-  - wartość brutto to osobna kolumna
-- jeśli tabela ma kolumny w innej kolejności, odczytaj je po NAGŁÓWKACH, nie po pozycji
-- jeśli tabela zawiera pozycje wielowierszowe, połącz linie należące do tej samej pozycji
-- jeśli w jednej linii są jednocześnie kod i nazwa, item_name ma zawierać nazwę, a code/pkwiu/gtu odczytaj osobno gdy występują
-- jeśli VAT jest podany jako 7%, zachowaj 7%, nie zamieniaj go na 8%
-- dla każdej pozycji postaraj się odczytać:
-  item_name, quantity, unit, unit_price, net_total, vat_rate, vat_total, gross_total, pkwiu, gtu, code
-- jeśli pozycja nie ma brutto, ustaw gross_total=null
-- jeśli pozycja nie ma kwoty VAT, ustaw vat_total=null
-- jeśli pozycja ma tylko wartość netto i stawkę VAT, nie wyliczaj nic samodzielnie, ustaw brakujące pola null
-- jeśli pozycja ma wartość netto i wartość brutto, zwróć obie wartości
-- jeśli na fakturze widać cenę jednostkową brutto, zwróć ją jako unit_price_gross
-
-WYMUSZENIA JAKOŚCI:
-- jeśli faktura ma więcej niż 1 pozycję, w items muszą być wszystkie pozycje
-- nie kopiuj sumy "Razem" jako osobnej pozycji
-- nie kopiuj wierszy "W tym", "Razem", "Podsumowanie", "Do zapłaty", "Pozostało do zapłaty" jako itemów
-- nie zamieniaj "Odbiorca" na "Nabywca", jeśli obie sekcje są obecne
-- nie traktuj numerów kont, kodów kreskowych ani numeru zamówienia jako NIP
-- jeśli na dokumencie jest tylko numer wewnętrzny klienta, to buyer_nip ustaw null
-- jeśli na pozycji brakuje jawnej kwoty VAT, ale dokument pokazuje netto i brutto, zostaw vat_total=null
-
-Zwróć JSON dokładnie w tej strukturze:
+Struktura:
 {
   "seller_nip": null,
   "seller_name": null,
@@ -890,29 +882,25 @@ Zwróć JSON dokładnie w tej strukturze:
   "bank_account": null,
   "payment_method": null,
   "paid": null,
-  "items": [
-    {
-      "item_name": null,
-      "quantity": null,
-      "unit": null,
-      "unit_price": null,
-      "unit_price_gross": null,
-      "net_total": null,
-      "vat_rate": null,
-      "vat_total": null,
-      "gross_total": null,
-      "pkwiu": null,
-      "gtu": null,
-      "code": null
-    }
-  ]
+  "items": [{
+    "item_name": null,
+    "quantity": null,
+    "unit": null,
+    "unit_price": null,
+    "unit_price_before_discount": null,
+    "unit_price_gross": null,
+    "discount_percent": null,
+    "discount_amount": null,
+    "net_total": null,
+    "vat_rate": null,
+    "vat_total": null,
+    "gross_total": null,
+    "pkwiu": null,
+    "gtu": null,
+    "code": null
+  }]
 }`;
 }
-
-type InputContent =
-  | { type: "input_text"; text: string }
-  | { type: "input_image"; image_url: string; detail: "auto" | "low" | "high" }
-  | { type: "input_file"; filename: string; file_data: string };
 
 async function extractInvoiceData(file: File, base64: string): Promise<InvoiceData> {
   const content: InputContent[] = [{ type: "input_text", text: buildExtractionPrompt() }];
@@ -936,33 +924,28 @@ async function extractInvoiceData(file: File, base64: string): Promise<InvoiceDa
     input: [{ role: "user", content }],
   });
 
-  const output = cleanJsonText(extractOutputText(response));
-  return JSON.parse(output) as InvoiceData;
+  return parseInvoiceJson(extractOutputText(response));
 }
 
 async function validateWithSecondPass(file: File, base64: string, firstPassData: InvoiceData): Promise<InvoiceData> {
-  const secondPassPrompt = `
-Masz dwa zadania:
-1) sprawdzić poprawność wcześniej odczytanych danych z faktury,
-2) poprawić JSON, jeśli widzisz błąd.
+  const prompt = `
+Sprawdź i popraw JSON z faktury.
 
-Najczęstsze błędy do wychwycenia:
-- pomylenie nabywcy z odbiorcą
-- błędny NIP nabywcy lub sprzedawcy
-- odczytanie "Razem" jako pozycji faktury
-- pomylenie PKWiU / GTU / kodu z ilością
-- przesunięcie kolumn w tabeli
-- brak części pozycji przy wielowierszowej fakturze
-- wpisanie kwot z podsumowania zamiast z wiersza pozycji
-- błędne rozpoznanie układu, gdzie netto i brutto są jedna pod drugą
-- wzięcie numeru konta, kodu kreskowego albo numeru zamówienia za NIP albo numer faktury
+Najważniejsze:
+- odróżnij Nabywcę od Odbiorcy
+- jeśli dokument zawiera osobny Odbiorca, pozostaw go w recipient_*
+- nie kopiuj sum jako pozycji
+- rozpoznaj rabaty i wymuś cenę po rabacie jako unit_price
+- sprawdź matematykę:
+  quantity × unit_price = net_total
+  net_total + vat_total = gross_total
 
-Masz poprawić JSON i zwrócić WYŁĄCZNIE czysty JSON w tej samej strukturze.
-Oto kandydat JSON do weryfikacji:
+ZWRÓĆ WYŁĄCZNIE JSON.
+JSON do weryfikacji:
 ${JSON.stringify(firstPassData, null, 2)}
 `;
 
-  const content: InputContent[] = [{ type: "input_text", text: secondPassPrompt }];
+  const content: InputContent[] = [{ type: "input_text", text: prompt }];
 
   if (file.type.startsWith("image/")) {
     content.push({
@@ -983,8 +966,52 @@ ${JSON.stringify(firstPassData, null, 2)}
     input: [{ role: "user", content }],
   });
 
-  const output = cleanJsonText(extractOutputText(response));
-  return JSON.parse(output) as InvoiceData;
+  return parseInvoiceJson(extractOutputText(response));
+}
+
+function buildValidationDetails(
+  data: InvoiceData,
+  lineMissingFields: LineIssue[],
+  totalsFromItems: { net_total: string | null; vat_total: string | null; gross_total: string | null },
+  totalsMismatch: boolean
+): string[] {
+  const details: string[] = [];
+
+  if (data.paid === true && !data.payment_date) {
+    details.push("Zaznaczono fakturę jako opłaconą, ale brakuje daty zapłaty.");
+  }
+
+  lineMissingFields.forEach((issue) => {
+    details.push(`Pozycja ${issue.line}: brakujące pola: ${issue.fields.join(", ")}.`);
+  });
+
+  if (totalsMismatch) {
+    details.push(`Suma pozycji nie zgadza się z nagłówkiem. Z pozycji: netto ${totalsFromItems.net_total ?? "-"}, VAT ${totalsFromItems.vat_total ?? "-"}, brutto ${totalsFromItems.gross_total ?? "-"}.`);
+  }
+
+  return details;
+}
+
+function buildInvalidFieldDetails(data: InvoiceData): { invalidFields: string[]; invalidDetails: string[] } {
+  const invalidFields: string[] = [];
+  const invalidDetails: string[] = [];
+
+  const checks: Array<{ key: "seller_nip" | "buyer_nip" | "recipient_nip"; value: string | null | undefined; label: string }> = [
+    { key: "seller_nip", value: data.seller_nip, label: "NIP sprzedawcy" },
+    { key: "buyer_nip", value: data.buyer_nip, label: "NIP nabywcy" },
+    { key: "recipient_nip", value: data.recipient_nip, label: "NIP odbiorcy" },
+  ];
+
+  for (const check of checks) {
+    const normalized = normalizeNip(check.value);
+    if (!normalized) continue;
+    if (!hasNipFormat(normalized)) {
+      invalidFields.push(check.key);
+      invalidDetails.push(`${check.label} ma nieprawidłowy format: "${normalized}". Prawidłowy NIP powinien mieć dokładnie 10 cyfr.`);
+    }
+  }
+
+  return { invalidFields, invalidDetails };
 }
 
 export async function POST(req: Request) {
@@ -998,7 +1025,6 @@ export async function POST(req: Request) {
     }
 
     const formData = await req.formData();
-
     const file = formData.get("file") as File | null;
     const manualDataRaw = formData.get("manualData");
     const manualData =
@@ -1010,14 +1036,7 @@ export async function POST(req: Request) {
       return Response.json({ success: false, message: "Nie wybrano pliku." }, { status: 400 });
     }
 
-    const allowedTypes = [
-      "application/pdf",
-      "image/png",
-      "image/jpeg",
-      "image/jpg",
-      "image/webp",
-    ];
-
+    const allowedTypes = ["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"];
     if (!allowedTypes.includes(file.type)) {
       return Response.json(
         { success: false, message: "Obsługiwane formaty: PDF, PNG, JPG, JPEG, WEBP." },
@@ -1040,17 +1059,13 @@ export async function POST(req: Request) {
     }
 
     if (freshUser.credits < 1) {
-      return Response.json(
-        { success: false, message: "Brak kredytów na koncie.", credits_left: 0 },
-        { status: 402 }
-      );
+      return Response.json({ success: false, message: "Brak kredytów na koncie.", credits_left: 0 }, { status: 402 });
     }
 
     const bytes = await file.arrayBuffer();
     const base64 = Buffer.from(bytes).toString("base64");
 
     let data: InvoiceData;
-
     try {
       const firstPass = await extractInvoiceData(file, base64);
       const secondPass = await validateWithSecondPass(file, base64, firstPass);
@@ -1058,10 +1073,7 @@ export async function POST(req: Request) {
     } catch (parseError) {
       console.error("Błąd odczytu modelu:", parseError);
       return Response.json(
-        {
-          success: false,
-          message: "Nie udało się poprawnie odczytać danych z faktury.",
-        },
+        { success: false, message: "Nie udało się poprawnie odczytać danych z faktury." },
         { status: 500 }
       );
     }
@@ -1099,16 +1111,9 @@ export async function POST(req: Request) {
       }
     }
 
-    if (data.seller_nip && !hasNipFormat(data.seller_nip)) {
-      missingFields.push("seller_nip");
-    }
+    const { invalidFields, invalidDetails } = buildInvalidFieldDetails(data);
 
-    if (data.buyer_nip && !hasNipFormat(data.buyer_nip)) {
-      missingFields.push("buyer_nip");
-    }
-
-    const lineMissingFields: Array<{ line: number; fields: string[] }> = [];
-
+    const lineMissingFields: LineIssue[] = [];
     data.items.forEach((item, index) => {
       const lineFields: string[] = [];
       if (!item.item_name) lineFields.push("item_name");
@@ -1117,16 +1122,12 @@ export async function POST(req: Request) {
       if (!item.unit_price && !item.net_total) lineFields.push("unit_price_or_net_total");
       if (!item.net_total && !item.gross_total) lineFields.push("net_total_or_gross_total");
       if (!item.vat_rate) lineFields.push("vat_rate");
-
-      if (lineFields.length > 0) {
-        lineMissingFields.push({ line: index + 1, fields: lineFields });
-      }
+      if (lineFields.length > 0) lineMissingFields.push({ line: index + 1, fields: lineFields });
     });
 
     const declaredNet = toNum(data.net_total);
     const declaredVat = toNum(data.vat_total);
     const declaredGross = toNum(data.gross_total);
-
     const summedNet = toNum(totalsFromItems.net_total);
     const summedVat = toNum(totalsFromItems.vat_total);
     const summedGross = toNum(totalsFromItems.gross_total);
@@ -1137,14 +1138,25 @@ export async function POST(req: Request) {
     if (!Number.isNaN(declaredGross) && !Number.isNaN(summedGross) && !nearlyEqual(declaredGross, summedGross, 0.2)) totalsMismatch = true;
 
     const uniqueMissingFields = [...new Set(missingFields)];
+    const validationDetails = [
+      ...buildValidationDetails(data, lineMissingFields, totalsFromItems, totalsMismatch),
+      ...invalidDetails,
+    ];
 
-    if (lineMissingFields.length > 0 || uniqueMissingFields.length > 0) {
+    if (
+      itemCheck.math_problem ||
+      lineMissingFields.length > 0 ||
+      totalsMismatch ||
+      uniqueMissingFields.length > 0 ||
+      invalidFields.length > 0 ||
+      validationDetails.length > 0
+    ) {
       return Response.json(
         {
           success: false,
-          message:
-            "Brakują wymagane dane potrzebne do wygenerowania XML. Uzupełnij brakujące pola i spróbuj ponownie.",
+          message: "Brakują wymagane dane, część pól ma nieprawidłowy format albo co najmniej jedna pozycja wymaga ręcznej korekty.",
           missing_fields: uniqueMissingFields,
+          invalid_fields: invalidFields,
           extracted_data: data,
           missing_field_labels: uniqueMissingFields.map((field) => fieldLabels[field] || field),
           math_problem: itemCheck.math_problem,
@@ -1153,6 +1165,7 @@ export async function POST(req: Request) {
           line_missing_fields: lineMissingFields,
           totals_mismatch: totalsMismatch,
           totals_from_items: totalsFromItems,
+          validation_details: validationDetails,
           credits_left: freshUser.credits,
         },
         { status: 400 }
@@ -1165,17 +1178,11 @@ export async function POST(req: Request) {
     const [, updatedUser] = await prisma.$transaction([
       prisma.user.update({
         where: { id: freshUser.id },
-        data: {
-          credits: {
-            decrement: 1,
-          },
-        },
+        data: { credits: { decrement: 1 } },
       }),
       prisma.user.findUniqueOrThrow({
         where: { id: freshUser.id },
-        select: {
-          credits: true,
-        },
+        select: { credits: true },
       }),
       prisma.creditUsage.create({
         data: {
@@ -1196,14 +1203,10 @@ export async function POST(req: Request) {
     });
   } catch (error) {
     console.error("BŁĄD API:", error);
-
     return Response.json(
       {
         success: false,
-        message:
-          error instanceof Error
-            ? error.message
-            : "Wystąpił błąd serwera podczas przetwarzania faktury.",
+        message: error instanceof Error ? error.message : "Wystąpił błąd serwera podczas przetwarzania faktury.",
       },
       { status: 500 }
     );

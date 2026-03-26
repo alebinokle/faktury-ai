@@ -9,9 +9,38 @@ type ApiErrorResponse = {
   extracted_data?: Record<string, unknown>;
   raw_response?: string;
   credits_left?: number;
+  line_missing_fields?: Array<{ line: number; fields: string[] }>;
+  line_issues?: Array<{ line: number; fields: string[] }>;
+  totals_mismatch?: boolean;
+  totals_from_items?: {
+    net_total?: string | null;
+    vat_total?: string | null;
+    gross_total?: string | null;
+  };
+  auto_repaired?: boolean;
+  math_problem?: boolean;
+  validation_details?: string[];
 };
 
 type ManualFieldMap = Record<string, string>;
+
+type ItemDraft = {
+  item_name: string;
+  quantity: string;
+  unit: string;
+  unit_price: string;
+  unit_price_before_discount: string;
+  unit_price_gross: string;
+  discount_percent: string;
+  discount_amount: string;
+  net_total: string;
+  vat_rate: string;
+  vat_total: string;
+  gross_total: string;
+  pkwiu: string;
+  gtu: string;
+  code: string;
+};
 
 type MeResponse = {
   loggedIn: boolean;
@@ -32,7 +61,7 @@ type CreditsApiResponse = {
   };
 };
 
-const fieldLabels: Record<string, string> = {
+const mainFieldLabels: Record<string, string> = {
   seller_nip: "NIP sprzedawcy",
   seller_name: "Nazwa sprzedawcy",
   seller_address: "Adres sprzedawcy",
@@ -40,22 +69,105 @@ const fieldLabels: Record<string, string> = {
   buyer_nip: "NIP nabywcy",
   buyer_name: "Nazwa nabywcy",
   buyer_address: "Adres nabywcy",
+  recipient_name: "Nazwa odbiorcy",
+  recipient_address: "Adres odbiorcy",
+  recipient_nip: "NIP odbiorcy",
   invoice_number: "Numer faktury",
   issue_date: "Data wystawienia",
   sale_date: "Data sprzedaży",
+  currency: "Waluta",
+  place_of_issue: "Miejsce wystawienia",
   net_total: "Kwota netto",
   vat_total: "Kwota VAT",
   gross_total: "Kwota brutto",
-  vat_rate: "Stawka VAT",
-  item_name: "Nazwa towaru lub usługi",
-  quantity: "Ilość",
-  unit: "Jednostka miary",
-  unit_price: "Cena jednostkowa",
   payment_due_date: "Termin płatności",
   payment_date: "Data zapłaty",
   bank_account: "Numer rachunku bankowego",
-  paid: "Czy opłacono",
+  payment_method: "Forma płatności",
+  paid: "Czy zapłacono",
 };
+
+const itemFieldLabels: Record<string, string> = {
+  item_name: "Nazwa pozycji",
+  quantity: "Ilość",
+  unit: "Jednostka",
+  unit_price: "Cena netto po rabacie",
+  unit_price_before_discount: "Cena netto przed rabatem",
+  unit_price_gross: "Cena brutto jednostkowa",
+  discount_percent: "Rabat %",
+  discount_amount: "Rabat kwotowy",
+  net_total: "Wartość netto",
+  vat_rate: "Stawka VAT",
+  vat_total: "Kwota VAT",
+  gross_total: "Wartość brutto",
+  pkwiu: "PKWiU",
+  gtu: "GTU",
+  code: "Kod / indeks",
+  unit_price_or_net_total: "Cena netto lub wartość netto",
+  net_total_or_gross_total: "Wartość netto lub brutto",
+};
+
+const allFieldLabels: Record<string, string> = { ...mainFieldLabels, ...itemFieldLabels };
+
+function createEmptyItem(): ItemDraft {
+  return {
+    item_name: "",
+    quantity: "",
+    unit: "",
+    unit_price: "",
+    unit_price_before_discount: "",
+    unit_price_gross: "",
+    discount_percent: "",
+    discount_amount: "",
+    net_total: "",
+    vat_rate: "",
+    vat_total: "",
+    gross_total: "",
+    pkwiu: "",
+    gtu: "",
+    code: "",
+  };
+}
+
+function valueToString(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function toNumber(value: string): number | null {
+  const cleaned = String(value ?? "")
+    .trim()
+    .replace(/\s/g, "")
+    .replace(",", ".")
+    .replace(/[^\d.-]/g, "");
+  if (!cleaned) return null;
+  const num = Number(cleaned);
+  return Number.isNaN(num) ? null : num;
+}
+
+function approxEqual(a: number, b: number, tolerance = 0.2): boolean {
+  return Math.abs(a - b) <= tolerance;
+}
+
+function formatSourceItem(item: ItemDraft): string {
+  return [
+    item.item_name || "—",
+    item.quantity ? `ilość: ${item.quantity}` : "",
+    item.unit ? `j.m.: ${item.unit}` : "",
+    item.unit_price ? `netto po rabacie: ${item.unit_price}` : "",
+    item.net_total ? `netto: ${item.net_total}` : "",
+    item.vat_rate ? `VAT: ${item.vat_rate}` : "",
+    item.gross_total ? `brutto: ${item.gross_total}` : "",
+  ]
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function Hint({ children }: { children: React.ReactNode }) {
+  return <p className="text-xs text-gray-500">{children}</p>;
+}
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
@@ -81,8 +193,22 @@ export default function Home() {
   const [showCookies, setShowCookies] = useState(true);
 
   const [showFixModal, setShowFixModal] = useState(false);
+  const [canReopenFixModal, setCanReopenFixModal] = useState(false);
   const [manualData, setManualData] = useState<ManualFieldMap>({});
-  const [extractedData, setExtractedData] = useState<Record<string, unknown>>({});
+  const [manualItems, setManualItems] = useState<ItemDraft[]>([]);
+  const [sourceItems, setSourceItems] = useState<ItemDraft[]>([]);
+  const [lineMissingFields, setLineMissingFields] = useState<Array<{ line: number; fields: string[] }>>([]);
+  const [lineIssues, setLineIssues] = useState<Array<{ line: number; fields: string[] }>>([]);
+  const [totalsMismatch, setTotalsMismatch] = useState(false);
+  const [totalsFromItems, setTotalsFromItems] = useState<{
+    net_total?: string | null;
+    vat_total?: string | null;
+    gross_total?: string | null;
+  }>({});
+  const [autoRepaired, setAutoRepaired] = useState(false);
+  const [mathProblem, setMathProblem] = useState(false);
+  const [validationDetails, setValidationDetails] = useState<string[]>([]);
+  const [modalErrors, setModalErrors] = useState<string[]>([]);
 
   const [contactSubject, setContactSubject] = useState("Pomoc techniczna – ksefxml.pl");
   const [contactBody, setContactBody] = useState("");
@@ -104,21 +230,10 @@ export default function Home() {
     const loadMe = async () => {
       try {
         const res = await fetch("/api/auth/me", { cache: "no-store" });
-
-        let data: MeResponse | null = null;
-        try {
-          data = await res.json();
-        } catch (error) {
-          console.error("Błąd /api/auth/me:", error);
-          return;
-        }
-
+        const data: MeResponse = await res.json();
         if (data?.loggedIn && data.user) {
-          updateLoggedInUser({
-            email: data.user.email,
-            credits: data.user.credits,
-          });
-          setUserMessage(`Zalogowano jako ${data.user.email}`);
+          updateLoggedInUser({ email: data.user.email, credits: data.user.credits });
+          setUserMessage(`Zalogowano: ${data.user.email}`);
         } else {
           setLoggedIn(false);
           setUserEmail("");
@@ -126,73 +241,245 @@ export default function Home() {
         }
       } catch (error) {
         console.error(error);
-        setLoggedIn(false);
-        setUserEmail("");
-        setCredits(null);
       } finally {
         setCheckingLogin(false);
       }
     };
-
     loadMe();
   }, []);
 
   const downloadXml = () => {
     if (!generatedXml) return;
-
     const blob = new Blob([generatedXml], { type: "application/xml" });
     const url = URL.createObjectURL(blob);
-
     const a = document.createElement("a");
     a.href = url;
     a.download = generatedFilename || "faktura.xml";
     document.body.appendChild(a);
     a.click();
     a.remove();
-
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   };
 
   const downloadXmlFromValues = (xml: string, filename: string) => {
     const blob = new Blob([xml], { type: "application/xml" });
     const url = URL.createObjectURL(blob);
-
     const a = document.createElement("a");
     a.href = url;
     a.download = filename || "faktura.xml";
     document.body.appendChild(a);
     a.click();
     a.remove();
-
     setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
+
+  const buildManualPayload = (): Record<string, unknown> => ({
+    ...manualData,
+    items: manualItems.map((item) => ({
+      item_name: item.item_name || null,
+      quantity: item.quantity || null,
+      unit: item.unit || null,
+      unit_price: item.unit_price || null,
+      unit_price_before_discount: item.unit_price_before_discount || null,
+      unit_price_gross: item.unit_price_gross || null,
+      discount_percent: item.discount_percent || null,
+      discount_amount: item.discount_amount || null,
+      net_total: item.net_total || null,
+      vat_rate: item.vat_rate || null,
+      vat_total: item.vat_total || null,
+      gross_total: item.gross_total || null,
+      pkwiu: item.pkwiu || null,
+      gtu: item.gtu || null,
+      code: item.code || null,
+    })),
+  });
+
+  const seedManualEditors = (missing: string[], extracted: Record<string, unknown>, err?: ApiErrorResponse) => {
+    const initialManualData: ManualFieldMap = {};
+    const mainKeys = [
+      "seller_nip",
+      "seller_name",
+      "seller_address",
+      "seller_regon",
+      "buyer_nip",
+      "buyer_name",
+      "buyer_address",
+      "recipient_name",
+      "recipient_address",
+      "recipient_nip",
+      "invoice_number",
+      "issue_date",
+      "sale_date",
+      "currency",
+      "place_of_issue",
+      "net_total",
+      "vat_total",
+      "gross_total",
+      "payment_due_date",
+      "payment_date",
+      "bank_account",
+      "payment_method",
+      "paid",
+    ];
+
+    for (const key of mainKeys) {
+      if (key in extracted) initialManualData[key] = valueToString(extracted[key]);
+    }
+    for (const field of missing) {
+      if (!(field in initialManualData)) initialManualData[field] = valueToString(extracted[field]);
+    }
+
+    const rawItems = Array.isArray(extracted.items) ? extracted.items : [];
+    const seededItems: ItemDraft[] = rawItems.length
+      ? rawItems.map((rawItem) => {
+          const item = (rawItem || {}) as Record<string, unknown>;
+          return {
+            item_name: valueToString(item.item_name),
+            quantity: valueToString(item.quantity),
+            unit: valueToString(item.unit),
+            unit_price: valueToString(item.unit_price),
+            unit_price_before_discount: valueToString(item.unit_price_before_discount),
+            unit_price_gross: valueToString(item.unit_price_gross),
+            discount_percent: valueToString(item.discount_percent),
+            discount_amount: valueToString(item.discount_amount),
+            net_total: valueToString(item.net_total),
+            vat_rate: valueToString(item.vat_rate),
+            vat_total: valueToString(item.vat_total),
+            gross_total: valueToString(item.gross_total),
+            pkwiu: valueToString(item.pkwiu),
+            gtu: valueToString(item.gtu),
+            code: valueToString(item.code),
+          };
+        })
+      : [createEmptyItem()];
+
+    setManualData(initialManualData);
+    setManualItems(seededItems);
+    setSourceItems(seededItems);
+    setLineMissingFields(err?.line_missing_fields || []);
+    setLineIssues(err?.line_issues || []);
+    setTotalsMismatch(Boolean(err?.totals_mismatch));
+    setTotalsFromItems(err?.totals_from_items || {});
+    setAutoRepaired(Boolean(err?.auto_repaired));
+    setMathProblem(Boolean(err?.math_problem));
+    setValidationDetails(err?.validation_details || []);
+    setModalErrors([]);
+    setCanReopenFixModal(true);
+  };
+
+  const validateBeforeSubmit = (): string[] => {
+    const errors: string[] = [];
+
+    if ((manualData.paid || "").toLowerCase() === "true" && !(manualData.payment_date || "").trim()) {
+      errors.push("Zaznaczono fakturę jako opłaconą, ale brakuje daty zapłaty.");
+    }
+
+    if (!manualItems.length) {
+      errors.push("Brakuje pozycji faktury.");
+    }
+
+    manualItems.forEach((item, index) => {
+      const line = index + 1;
+      if (!item.item_name.trim()) errors.push(`Pozycja ${line}: brak nazwy.`);
+      if (!item.quantity.trim()) errors.push(`Pozycja ${line}: brak ilości.`);
+      if (!item.unit.trim()) errors.push(`Pozycja ${line}: brak jednostki.`);
+      if (!item.vat_rate.trim()) errors.push(`Pozycja ${line}: brak stawki VAT.`);
+
+      const qty = toNumber(item.quantity);
+      const unitPrice = toNumber(item.unit_price);
+      const net = toNumber(item.net_total);
+      const vat = toNumber(item.vat_total);
+      const gross = toNumber(item.gross_total);
+
+      if (qty !== null && unitPrice !== null && net !== null && !approxEqual(qty * unitPrice, net)) {
+        errors.push(`Pozycja ${line}: ilość × cena netto po rabacie nie zgadza się z wartością netto.`);
+      }
+      if (net !== null && vat !== null && gross !== null && !approxEqual(net + vat, gross)) {
+        errors.push(`Pozycja ${line}: netto + VAT nie zgadza się z brutto.`);
+      }
+    });
+
+    const headerNet = toNumber(manualData.net_total || "");
+    const headerVat = toNumber(manualData.vat_total || "");
+    const headerGross = toNumber(manualData.gross_total || "");
+
+    const sumNet = manualItems.reduce((sum, item) => sum + (toNumber(item.net_total) ?? 0), 0);
+    const sumVat = manualItems.reduce((sum, item) => sum + (toNumber(item.vat_total) ?? 0), 0);
+    const sumGross = manualItems.reduce((sum, item) => sum + (toNumber(item.gross_total) ?? 0), 0);
+
+    if (headerNet !== null && !approxEqual(headerNet, sumNet)) {
+      errors.push(`Suma netto pozycji (${sumNet.toFixed(2)}) nie zgadza się z netto nagłówka (${headerNet.toFixed(2)}).`);
+    }
+    if (headerVat !== null && !approxEqual(headerVat, sumVat)) {
+      errors.push(`Suma VAT pozycji (${sumVat.toFixed(2)}) nie zgadza się z VAT nagłówka (${headerVat.toFixed(2)}).`);
+    }
+    if (headerGross !== null && !approxEqual(headerGross, sumGross)) {
+      errors.push(`Suma brutto pozycji (${sumGross.toFixed(2)}) nie zgadza się z brutto nagłówka (${headerGross.toFixed(2)}).`);
+    }
+
+    return errors;
+  };
+
+  const handleProcessResponseError = async (res: Response) => {
+    const contentType = res.headers.get("content-type") || "";
+
+    if (!contentType.includes("application/json")) {
+      const text = await res.text();
+      setStatus("error");
+      setMessage("Wystąpił błąd podczas przetwarzania.");
+      setResult(text);
+      return;
+    }
+
+    const err: ApiErrorResponse = await res.json();
+    const missing = err.missing_fields || [];
+    const extracted = (err.extracted_data || {}) as Record<string, unknown>;
+
+    if (typeof err.credits_left === "number") setCredits(err.credits_left);
+
+    if (res.status === 401) {
+      setLoggedIn(false);
+      setUserEmail("");
+      setCredits(null);
+      setStatus("error");
+      setMessage(err.message || "Sesja wygasła. Zaloguj się ponownie.");
+      setResult(JSON.stringify(err, null, 2));
+      return;
+    }
+
+    if (res.status === 402) {
+      setStatus("error");
+      setMessage(err.message || "Brak środków na koncie.");
+      setResult(JSON.stringify(err, null, 2));
+      return;
+    }
+
+    setStatus("error");
+    setMessage(err.message || "Formularz wymaga dalszej korekty. XML nie został jeszcze wygenerowany.");
+    setMissingFields(missing);
+    seedManualEditors(missing, extracted, err);
+    setResult(JSON.stringify(err, null, 2));
+    setShowFixModal(true);
   };
 
   const handleSendLoginLink = async () => {
     try {
       setUserMessage("");
-
       const trimmedEmail = email.trim().toLowerCase();
-      if (!trimmedEmail) {
-        setUserMessage("Podaj adres e-mail.");
-        return;
-      }
+      if (!trimmedEmail) return setUserMessage("Wpisz adres e-mail.");
 
       const res = await fetch("/api/auth/send-link", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: trimmedEmail }),
       });
 
       const data = await res.json();
-
       if (!res.ok || !data?.success) {
-        setUserMessage(data?.message || "Nie udało się wysłać linku logowania.");
-        return;
+        return setUserMessage(data?.message || "Nie udało się wysłać linku logowania.");
       }
 
-      setUserMessage("Link logowania został wysłany na podany adres e-mail.");
+      setUserMessage("Link logowania został wysłany.");
     } catch (error) {
       console.error(error);
       setUserMessage("Wystąpił błąd podczas wysyłania linku logowania.");
@@ -202,28 +489,16 @@ export default function Home() {
   const handleRefreshSession = async () => {
     try {
       setUserMessage("");
-
       const res = await fetch("/api/auth/me", { cache: "no-store" });
-
-      let data: MeResponse | null = null;
-      try {
-        data = await res.json();
-      } catch (error) {
-        console.error("Błąd /api/auth/me:", error);
-        return;
-      }
-
+      const data: MeResponse = await res.json();
       if (data?.loggedIn && data.user) {
-        updateLoggedInUser({
-          email: data.user.email,
-          credits: data.user.credits,
-        });
-        setUserMessage(`Zalogowano jako ${data.user.email}`);
+        updateLoggedInUser({ email: data.user.email, credits: data.user.credits });
+        setUserMessage(`Zalogowano: ${data.user.email}`);
       } else {
         setLoggedIn(false);
         setUserEmail("");
         setCredits(null);
-        setUserMessage("Nie jesteś zalogowany.");
+        setUserMessage("Sesja nie jest aktywna.");
       }
     } catch (error) {
       console.error(error);
@@ -234,82 +509,56 @@ export default function Home() {
   const handleRefreshCredits = async () => {
     try {
       setUserMessage("");
-
-      if (!userEmail) {
-        setUserMessage("Brak adresu e-mail zalogowanego użytkownika.");
-        return;
-      }
+      if (!userEmail) return setUserMessage("Brak adresu e-mail.");
 
       const res = await fetch("/api/user/credits", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: userEmail }),
       });
 
       const data: CreditsApiResponse = await res.json();
-
       if (!res.ok || !data?.success || !data.user) {
-        setUserMessage(data?.message || "Nie udało się pobrać kredytów.");
-        return;
+        return setUserMessage(data?.message || "Nie udało się pobrać salda.");
       }
 
       setCredits(data.user.credits);
-      setUserMessage(`Aktualny stan kredytów: ${data.user.credits}`);
+      setUserMessage(`Aktualne saldo: ${data.user.credits}`);
     } catch (error) {
       console.error(error);
-      setUserMessage("Wystąpił błąd podczas pobierania kredytów.");
+      setUserMessage("Wystąpił błąd podczas pobierania salda.");
     }
   };
 
-  const handleAddTestCredits = async (creditsToAdd = 30) => {
+  const handleAddCredits = async (creditsToAdd = 30) => {
     try {
       setUserMessage("");
-
-      if (!userEmail) {
-        setUserMessage("Brak adresu e-mail zalogowanego użytkownika.");
-        return;
-      }
+      if (!userEmail) return setUserMessage("Brak adresu e-mail.");
 
       const res = await fetch("/api/user/add-credits", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          email: userEmail,
-          credits: creditsToAdd,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: userEmail, credits: creditsToAdd }),
       });
 
       const data: CreditsApiResponse = await res.json();
-
       if (!res.ok || !data?.success || !data.user) {
-        setUserMessage(data?.message || "Nie udało się dodać kredytów.");
-        return;
+        return setUserMessage(data?.message || "Nie udało się zasilić konta.");
       }
 
       setCredits(data.user.credits);
-      setUserMessage(`Dodano ${creditsToAdd} kredytów. Aktualny stan: ${data.user.credits}`);
+      setUserMessage(`Dodano ${creditsToAdd} kredytów. Aktualne saldo: ${data.user.credits}`);
     } catch (error) {
       console.error(error);
-      setUserMessage("Wystąpił błąd podczas dodawania kredytów.");
+      setUserMessage("Wystąpił błąd podczas zasilania konta.");
     }
   };
 
   const handleLogout = async () => {
     try {
-      const res = await fetch("/api/auth/logout", {
-        method: "POST",
-      });
-
+      const res = await fetch("/api/auth/logout", { method: "POST" });
       const data = await res.json();
-
-      if (!res.ok || !data?.success) {
-        setUserMessage(data?.message || "Nie udało się wylogować.");
-        return;
-      }
+      if (!res.ok || !data?.success) return setUserMessage(data?.message || "Nie udało się wylogować.");
 
       setLoggedIn(false);
       setUserEmail("");
@@ -323,29 +572,9 @@ export default function Home() {
   };
 
   const handleUpload = async () => {
-    if (!acceptedTerms) {
-      setStatus("error");
-      setMessage("Aby wysłać plik, musisz zaakceptować regulamin i politykę prywatności.");
-      setMissingFields([]);
-      setResult("");
-      return;
-    }
-
-    if (!loggedIn) {
-      setStatus("error");
-      setMessage("Najpierw zaloguj się linkiem wysłanym na e-mail.");
-      setMissingFields([]);
-      setResult("");
-      return;
-    }
-
-    if (!file) {
-      setStatus("error");
-      setMessage("Najpierw wybierz plik faktury.");
-      setMissingFields([]);
-      setResult("");
-      return;
-    }
+    if (!acceptedTerms) return setMessage("Wysyłka pliku wymaga akceptacji regulaminu i polityki prywatności.");
+    if (!loggedIn) return setMessage("Aby kontynuować, zaloguj się.");
+    if (!file) return setMessage("Wybierz plik faktury.");
 
     try {
       setLoading(true);
@@ -353,120 +582,43 @@ export default function Home() {
       setMessage("Trwa przetwarzanie faktury...");
       setResult("");
       setMissingFields([]);
-      setManualData({});
-      setExtractedData({});
+      setLineMissingFields([]);
+      setLineIssues([]);
+      setValidationDetails([]);
+      setModalErrors([]);
       setShowFixModal(false);
 
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("manualData", JSON.stringify(manualData));
+      formData.append("manualData", JSON.stringify({}));
 
-      const res = await fetch("/api/process", {
-        method: "POST",
-        body: formData,
-      });
-
-      const contentType = res.headers.get("content-type") || "";
+      const res = await fetch("/api/process", { method: "POST", body: formData });
       const disposition = res.headers.get("content-disposition") || "";
       const creditsLeftHeader = res.headers.get("x-credits-left");
 
-      if (!res.ok) {
-        if (contentType.includes("application/json")) {
-          const err: ApiErrorResponse = await res.json();
-          const missing = err.missing_fields || [];
-          const extracted = (err.extracted_data || {}) as Record<string, unknown>;
-
-          if (typeof err.credits_left === "number") {
-            setCredits(err.credits_left);
-          }
-
-          if (res.status === 401) {
-            setLoggedIn(false);
-            setUserEmail("");
-            setCredits(null);
-            setStatus("error");
-            setMessage(err.message || "Sesja wygasła. Zaloguj się ponownie.");
-            setMissingFields([]);
-            setResult(JSON.stringify(err, null, 2));
-            return;
-          }
-
-          if (res.status === 402) {
-            setStatus("error");
-            setMessage(err.message || "Brak kredytów. Dokup pakiet, aby wygenerować XML.");
-            setMissingFields([]);
-            setResult(JSON.stringify(err, null, 2));
-            return;
-          }
-
-          setStatus("error");
-          setMessage(err.message || "Wystąpił błąd podczas przetwarzania.");
-          setMissingFields(missing);
-          setExtractedData(extracted);
-
-          const initialManualData: ManualFieldMap = {};
-          for (const field of missing) {
-            const raw = extracted[field];
-            initialManualData[field] = raw === null || raw === undefined ? "" : String(raw);
-          }
-          setManualData(initialManualData);
-
-          setResult(
-            JSON.stringify(
-              {
-                message: err.message,
-                missing_fields: err.missing_fields,
-                extracted_data: err.extracted_data,
-                raw_response: err.raw_response,
-                credits_left: err.credits_left,
-              },
-              null,
-              2
-            )
-          );
-
-          if (missing.length > 0) {
-            setShowFixModal(true);
-          }
-        } else {
-          const text = await res.text();
-          setStatus("error");
-          setMessage("Wystąpił błąd podczas przetwarzania.");
-          setMissingFields([]);
-          setResult(text);
-        }
-        return;
-      }
+      if (!res.ok) return await handleProcessResponseError(res);
 
       const text = await res.text();
-
       let filename = "faktura.xml";
       const match = disposition.match(/filename="([^"]+)"/i);
-      if (match?.[1]) {
-        filename = match[1];
-      }
+      if (match?.[1]) filename = match[1];
 
       if (creditsLeftHeader !== null) {
         const parsedCredits = Number(creditsLeftHeader);
-        if (!Number.isNaN(parsedCredits)) {
-          setCredits(parsedCredits);
-        }
+        if (!Number.isNaN(parsedCredits)) setCredits(parsedCredits);
       }
 
       setGeneratedXml(text);
       setGeneratedFilename(filename);
       setResult(text);
       setStatus("success");
-      setMessage("Gotowe. Plik XML został wygenerowany.");
-      setMissingFields([]);
-
+      setMessage("Plik XML został wygenerowany.");
+      setCanReopenFixModal(false);
       downloadXmlFromValues(text, filename);
     } catch (error) {
       console.error(error);
       setStatus("error");
       setMessage("Wystąpił błąd podczas wysyłania pliku.");
-      setMissingFields([]);
-      setResult("");
     } finally {
       setLoading(false);
     }
@@ -474,112 +626,100 @@ export default function Home() {
 
   const handleGenerateFromManualData = async () => {
     if (!file) return;
+    if (!loggedIn) return setMessage("Sesja wygasła. Zaloguj się ponownie.");
 
-    if (!loggedIn) {
+    const clientErrors = validateBeforeSubmit();
+    setModalErrors(clientErrors);
+
+    if (clientErrors.length) {
       setStatus("error");
-      setMessage("Sesja wygasła. Zaloguj się ponownie.");
+      setMessage("Formularz zawiera błędy. Popraw je przed wygenerowaniem XML.");
+      setShowFixModal(true);
       return;
     }
 
     try {
       setLoading(true);
       setStatus("info");
-      setMessage("Generowanie XML po uzupełnieniu danych...");
+      setMessage("Trwa generowanie XML...");
 
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("manualData", JSON.stringify(manualData));
+      formData.append("manualData", JSON.stringify(buildManualPayload()));
 
-      const res = await fetch("/api/process", {
-        method: "POST",
-        body: formData,
-      });
-
-      const contentType = res.headers.get("content-type") || "";
+      const res = await fetch("/api/process", { method: "POST", body: formData });
       const disposition = res.headers.get("content-disposition") || "";
       const creditsLeftHeader = res.headers.get("x-credits-left");
 
       if (!res.ok) {
-        if (contentType.includes("application/json")) {
-          const err: ApiErrorResponse = await res.json();
-
-          if (typeof err.credits_left === "number") {
-            setCredits(err.credits_left);
-          }
-
-          if (res.status === 401) {
-            setLoggedIn(false);
-            setUserEmail("");
-            setCredits(null);
-            setStatus("error");
-            setMessage(err.message || "Sesja wygasła. Zaloguj się ponownie.");
-            setResult(JSON.stringify(err, null, 2));
-            return;
-          }
-
-          if (res.status === 402) {
-            setStatus("error");
-            setMessage(err.message || "Brak kredytów. Dokup pakiet, aby wygenerować XML.");
-            setResult(JSON.stringify(err, null, 2));
-            return;
-          }
-
-          setStatus("error");
-          setMessage(err.message || "Nie udało się wygenerować XML po uzupełnieniu danych.");
-          setResult(JSON.stringify(err, null, 2));
-          return;
-        }
-
-        const errText = await res.text();
-        setStatus("error");
-        setMessage("Nie udało się wygenerować XML po uzupełnieniu danych.");
-        setResult(errText);
-        return;
+        setShowFixModal(true);
+        return await handleProcessResponseError(res);
       }
 
       const text = await res.text();
-
       let filename = "faktura.xml";
       const match = disposition.match(/filename="([^"]+)"/i);
-      if (match?.[1]) {
-        filename = match[1];
-      }
+      if (match?.[1]) filename = match[1];
 
       if (creditsLeftHeader !== null) {
         const parsedCredits = Number(creditsLeftHeader);
-        if (!Number.isNaN(parsedCredits)) {
-          setCredits(parsedCredits);
-        }
+        if (!Number.isNaN(parsedCredits)) setCredits(parsedCredits);
       }
 
       setGeneratedXml(text);
       setGeneratedFilename(filename);
       setResult(text);
       setStatus("success");
-      setMessage("Gotowe. XML został wygenerowany po uzupełnieniu danych.");
+      setMessage("Plik XML został wygenerowany.");
       setShowFixModal(false);
-      setMissingFields([]);
-
+      setModalErrors([]);
+      setCanReopenFixModal(false);
       downloadXmlFromValues(text, filename);
     } catch (error) {
       console.error(error);
       setStatus("error");
       setMessage("Wystąpił błąd podczas generowania XML.");
+      setShowFixModal(true);
     } finally {
       setLoading(false);
     }
+  };
+
+  const updateItemField = (index: number, field: keyof ItemDraft, value: string) => {
+    setManualItems((prev) => prev.map((item, i) => (i === index ? { ...item, [field]: value } : item)));
+  };
+
+  const addManualItem = () => {
+    setManualItems((prev) => [...prev, createEmptyItem()]);
+    setSourceItems((prev) => [...prev, createEmptyItem()]);
+  };
+
+  const removeManualItem = (index: number) => {
+    setManualItems((prev) => prev.filter((_, i) => i !== index));
+    setSourceItems((prev) => prev.filter((_, i) => i !== index));
   };
 
   const openMailClient = () => {
     window.location.href = mailtoHref;
   };
 
+  const resetAfterFileChange = () => {
+    setMessage("");
+    setResult("");
+    setMissingFields([]);
+    setLineMissingFields([]);
+    setLineIssues([]);
+    setValidationDetails([]);
+    setModalErrors([]);
+    setStatus("idle");
+    setShowFixModal(false);
+    setCanReopenFixModal(false);
+  };
+
   if (checkingLogin) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-        <div className="rounded-xl bg-white px-6 py-4 shadow text-gray-700">
-          Ładowanie...
-        </div>
+        <div className="rounded-xl bg-white px-6 py-4 shadow text-gray-700">Ładowanie...</div>
       </div>
     );
   }
@@ -593,16 +733,15 @@ export default function Home() {
 
       <div className="flex flex-col items-center py-16 px-4">
         <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-xl mb-6">
-          <h1 className="text-2xl font-bold mb-2 text-gray-800">
-            Przetwarzanie faktur do KSeF XML
-          </h1>
-
+          <h1 className="text-2xl font-bold mb-2 text-gray-800">Generowanie XML do KSeF</h1>
           <p className="text-gray-500 mb-6">
-            Wgraj fakturę w PDF lub jako zdjęcie. System odczyta dokument i wygeneruje XML albo pokaże, jakich danych brakuje.
+            Prześlij fakturę w PDF lub jako zdjęcie. System odczyta dokument, spróbuje naprawić typowe
+            niejasności, a przy trudniejszych fakturach otworzy pełny formularz kontroli wszystkich danych
+            i pozycji.
           </p>
 
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 mb-4">
-            <h2 className="text-lg font-semibold text-gray-800 mb-3">Logowanie i konto</h2>
+            <h2 className="text-lg font-semibold text-gray-800 mb-3">Konto</h2>
 
             {!loggedIn ? (
               <div className="flex flex-col gap-3">
@@ -610,7 +749,7 @@ export default function Home() {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="Podaj swój e-mail"
+                  placeholder="Adres e-mail"
                   className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500"
                 />
 
@@ -622,19 +761,16 @@ export default function Home() {
                   >
                     Wyślij link logowania
                   </button>
-
                   <button
                     type="button"
                     onClick={handleRefreshSession}
                     className="rounded border border-blue-900 bg-white px-4 py-2 text-sm font-semibold text-blue-900 hover:bg-blue-50"
                   >
-                    Sprawdź logowanie
+                    Sprawdź status logowania
                   </button>
                 </div>
 
-                <div className="text-xs text-gray-500">
-                  Po kliknięciu przycisku wyślemy link logowania na podany adres e-mail.
-                </div>
+                <Hint>Po kliknięciu przycisku wyślemy link logowania na podany adres e-mail.</Hint>
 
                 {userMessage && (
                   <div className="rounded border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
@@ -645,39 +781,34 @@ export default function Home() {
             ) : (
               <div className="flex flex-col gap-3">
                 <div className="rounded border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
-                  Zalogowano jako: <span className="font-semibold">{userEmail}</span>
+                  Konto aktywne: <span className="font-semibold">{userEmail}</span>
                 </div>
 
                 {credits !== null && (
                   <div className="text-sm font-medium text-gray-700">
-                    Aktualna liczba kredytów: <span className="text-blue-900">{credits}</span>
+                    Saldo kredytów: <span className="text-blue-900">{credits}</span>
                   </div>
                 )}
 
                 <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
-                  <div className="text-sm font-semibold text-blue-900 mb-2">
-                    Zarządzanie kredytami
-                  </div>
-
+                  <div className="text-sm font-semibold text-blue-900 mb-2">Kredyty</div>
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
                       onClick={handleRefreshCredits}
                       className="rounded border border-blue-900 bg-white px-4 py-2 text-sm font-semibold text-blue-900 hover:bg-blue-50"
                     >
-                      Sprawdź kredyty
+                      Odśwież saldo
                     </button>
-
                     <button
                       type="button"
-                      onClick={() => handleAddTestCredits(30)}
+                      onClick={() => handleAddCredits(30)}
                       className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
                     >
-                      Dodaj 30 kredytów
+                      Zasil konto
                     </button>
                   </div>
-
-                  </div>
+                </div>
 
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -687,7 +818,6 @@ export default function Home() {
                   >
                     Odśwież konto
                   </button>
-
                   <button
                     type="button"
                     onClick={handleLogout}
@@ -714,14 +844,9 @@ export default function Home() {
               className="hidden"
               onChange={(e) => {
                 setFile(e.target.files?.[0] || null);
-                setMessage("");
-                setResult("");
-                setMissingFields([]);
-                setStatus("idle");
-                setShowFixModal(false);
+                resetAfterFileChange();
               }}
             />
-
             <div className="flex items-center gap-3">
               <label
                 htmlFor="file-upload"
@@ -729,10 +854,7 @@ export default function Home() {
               >
                 Wybierz plik
               </label>
-
-              <span className="text-sm text-gray-700 break-all">
-                {file ? file.name : "Nie wybrano pliku"}
-              </span>
+              <span className="text-sm text-gray-700 break-all">{file ? file.name : "Nie wybrano pliku"}</span>
             </div>
           </div>
 
@@ -754,18 +876,19 @@ export default function Home() {
                   regulamin i politykę prywatności
                 </button>
                 .
-                <span className="block mt-1 text-xs text-gray-500">
-                  Bez akceptacji regulaminu nie można przesłać pliku do przetworzenia.
-                </span>
               </span>
             </label>
+
+            <p className="text-xs text-gray-500 mt-2">
+              Bez akceptacji regulaminu nie można przesłać pliku do przetworzenia.
+            </p>
 
             <div className="mt-3">
               <a
                 href="/polityka-prywatnosci"
                 className="text-sm text-blue-700 underline hover:text-blue-900"
               >
-                Zobacz pełną politykę prywatności
+                Polityka prywatności
               </a>
             </div>
           </div>
@@ -776,7 +899,7 @@ export default function Home() {
               disabled={loading || !acceptedTerms || !loggedIn}
               className="flex-1 min-w-[180px] bg-blue-900 text-white py-2 rounded hover:bg-blue-800 transition font-semibold disabled:opacity-70 disabled:cursor-not-allowed"
             >
-              {loading ? "Przetwarzanie..." : "Przetwórz do XML"}
+              {loading ? "Przetwarzanie..." : "Generuj XML"}
             </button>
 
             <button
@@ -784,7 +907,7 @@ export default function Home() {
               disabled={!generatedXml}
               className="px-4 py-2 rounded border border-blue-900 text-blue-900 bg-white hover:bg-blue-50 transition font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Pobierz ponownie XML
+              Pobierz XML
             </button>
 
             <button
@@ -792,7 +915,7 @@ export default function Home() {
               type="button"
               className="px-4 py-2 rounded border border-gray-300 text-gray-800 bg-white hover:bg-gray-50 transition font-semibold"
             >
-              Instrukcja KSeF
+              Instrukcja
             </button>
 
             <button
@@ -800,16 +923,14 @@ export default function Home() {
               type="button"
               className="px-4 py-2 rounded border border-red-300 text-red-700 bg-white hover:bg-red-50 transition font-semibold"
             >
-              Kontakt z działem technicznym
+              Kontakt
             </button>
           </div>
         </div>
 
-        {(message || missingFields.length > 0) && (
+        {(message || missingFields.length > 0 || lineMissingFields.length > 0 || lineIssues.length > 0 || validationDetails.length > 0 || canReopenFixModal) && (
           <div className="bg-white p-6 rounded-xl shadow-lg w-full max-w-xl mb-10 border">
-            <h2 className="font-bold text-lg mb-3 text-gray-800">
-              Informacje zwrotne
-            </h2>
+            <h2 className="font-bold text-lg mb-3 text-gray-800">Status</h2>
 
             <div
               className={`rounded-lg px-4 py-3 text-sm mb-4 ${
@@ -823,23 +944,67 @@ export default function Home() {
               {message}
             </div>
 
-            {missingFields.length > 0 && (
-              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-                <div className="font-semibold text-amber-800 mb-2">
-                  Brakuje następujących danych:
-                </div>
-                <ul className="list-disc pl-5 text-sm text-amber-900 space-y-1">
-                  {missingFields.map((field) => (
-                    <li key={field}>{fieldLabels[field] || field}</li>
+            {(autoRepaired || mathProblem || totalsMismatch) && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 space-y-1 mb-4">
+                {autoRepaired && <div>System automatycznie uzupełnił część brakujących wartości.</div>}
+                {mathProblem && <div>Co najmniej jedna pozycja wymaga sprawdzenia matematyki lub rabatu.</div>}
+                {totalsMismatch && (
+                  <div>
+                    Sumy pozycji różnią się od sum faktury. Obliczone z pozycji: netto {totalsFromItems.net_total ?? "-"},
+                    VAT {totalsFromItems.vat_total ?? "-"}, brutto {totalsFromItems.gross_total ?? "-"}.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {validationDetails.length > 0 && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 mb-4">
+                <div className="font-semibold text-red-800 mb-2">Dokładne przyczyny blokady:</div>
+                <ul className="list-disc pl-5 text-sm text-red-900 space-y-1">
+                  {validationDetails.map((detail, index) => (
+                    <li key={index}>{detail}</li>
                   ))}
                 </ul>
+              </div>
+            )}
 
+            {missingFields.length > 0 && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 mb-4">
+                <div className="font-semibold text-amber-800 mb-2">Brakujące pola główne:</div>
+                <ul className="list-disc pl-5 text-sm text-amber-900 space-y-1">
+                  {missingFields.map((field) => (
+                    <li key={field}>{allFieldLabels[field] || field}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {(lineMissingFields.length > 0 || lineIssues.length > 0) && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 mb-4">
+                <div className="font-semibold text-amber-800 mb-2">Pozycje do ręcznej korekty:</div>
+                <ul className="list-disc pl-5 text-sm text-amber-900 space-y-1">
+                  {lineMissingFields.map((entry) => (
+                    <li key={`missing-${entry.line}`}>
+                      Linia {entry.line}: {entry.fields.map((field) => allFieldLabels[field] || field).join(", ")}
+                    </li>
+                  ))}
+                  {lineIssues.map((entry) => (
+                    <li key={`issue-${entry.line}`}>Linia {entry.line}: sprawdź zgodność ilości, rabatu, cen i sum.</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {canReopenFixModal && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+                <div className="font-semibold text-amber-800 mb-2">Korekta danych</div>
+                <p className="text-sm text-amber-900">Możesz wrócić do formularza i kontynuować edycję danych faktury.</p>
                 <button
                   type="button"
                   onClick={() => setShowFixModal(true)}
                   className="mt-3 rounded bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700"
                 >
-                  Uzupełnij brakujące dane
+                  Wróć do formularza korekty
                 </button>
               </div>
             )}
@@ -855,18 +1020,16 @@ export default function Home() {
           </div>
 
           <div className="bg-white p-6 rounded-xl shadow">
-            <h2 className="font-bold text-lg mb-2 text-gray-800">Nasza aplikacja</h2>
+            <h2 className="font-bold text-lg mb-2 text-gray-800">ksefxml.pl</h2>
             <p className="text-gray-600 text-sm">
-              Aplikacja umożliwia szybkie generowanie plików XML z faktur wgranych jako PDF lub pliki graficzne, bez ręcznego przepisywania danych.
+              Serwis umożliwia generowanie XML z różnych typów faktur i daje pełny edytor wszystkich pól, w tym pozycji, rabatów, VAT, kontrahentów i płatności.
             </p>
           </div>
         </div>
 
         {result && (
           <div className="bg-white p-6 rounded-xl shadow-lg w-full max-w-4xl mt-10">
-            <h2 className="font-bold text-lg mb-3 text-gray-800">
-              Zawartość odpowiedzi
-            </h2>
+            <h2 className="font-bold text-lg mb-3 text-gray-800">Odpowiedź systemu</h2>
             <pre className="mt-2 p-3 bg-gray-50 border rounded text-xs text-gray-700 overflow-auto max-h-96 whitespace-pre-wrap">
               {result}
             </pre>
@@ -876,11 +1039,9 @@ export default function Home() {
 
       {showFixModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-          <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl max-h-[90vh] overflow-hidden">
+          <div className="w-full max-w-6xl rounded-2xl bg-white shadow-2xl max-h-[94vh] overflow-hidden">
             <div className="flex items-center justify-between border-b px-6 py-4">
-              <h2 className="text-xl font-bold text-gray-800">
-                Uzupełnij brakujące lub nieczytelne dane
-              </h2>
+              <h2 className="text-xl font-bold text-gray-800">Kontrola i korekta danych faktury</h2>
               <button
                 type="button"
                 onClick={() => setShowFixModal(false)}
@@ -890,25 +1051,206 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="overflow-y-auto px-6 py-5 space-y-4 max-h-[65vh]">
-              {missingFields.map((field) => (
-                <div key={field}>
-                  <label className="block text-sm font-semibold text-gray-700 mb-1">
-                    {fieldLabels[field] || field}
-                  </label>
-                  <input
-                    type="text"
-                    value={manualData[field] || ""}
-                    onChange={(e) =>
-                      setManualData((prev) => ({
-                        ...prev,
-                        [field]: e.target.value,
-                      }))
-                    }
-                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500"
-                  />
+            <div className="overflow-y-auto px-6 py-5 space-y-6 max-h-[76vh]">
+              {(missingFields.length > 0 || lineMissingFields.length > 0 || lineIssues.length > 0 || validationDetails.length > 0 || totalsMismatch || autoRepaired || mathProblem || modalErrors.length > 0) && (
+                <div className="space-y-4">
+                  {modalErrors.length > 0 && (
+                    <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+                      <div className="font-semibold text-red-800 mb-2">Popraw przed generowaniem:</div>
+                      <ul className="list-disc pl-5 text-sm text-red-900 space-y-1">
+                        {modalErrors.map((detail, index) => (
+                          <li key={index}>{detail}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {(autoRepaired || mathProblem || totalsMismatch) && (
+                    <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 space-y-1">
+                      {autoRepaired && <div>System automatycznie uzupełnił część brakujących wartości.</div>}
+                      {mathProblem && <div>Co najmniej jedna pozycja wymaga sprawdzenia matematyki lub rabatu.</div>}
+                      {totalsMismatch && (
+                        <div>
+                          Sumy pozycji różnią się od sum faktury. Obliczone z pozycji: netto {totalsFromItems.net_total ?? "-"},
+                          VAT {totalsFromItems.vat_total ?? "-"}, brutto {totalsFromItems.gross_total ?? "-"}.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {validationDetails.length > 0 && (
+                    <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+                      <div className="font-semibold text-red-800 mb-2">Dokładne przyczyny blokady:</div>
+                      <ul className="list-disc pl-5 text-sm text-red-900 space-y-1">
+                        {validationDetails.map((detail, index) => (
+                          <li key={index}>{detail}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {missingFields.length > 0 && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+                      <div className="font-semibold text-amber-800 mb-2">Brakujące pola główne:</div>
+                      <ul className="list-disc pl-5 text-sm text-amber-900 space-y-1">
+                        {missingFields.map((field) => (
+                          <li key={field}>{allFieldLabels[field] || field}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {(lineMissingFields.length > 0 || lineIssues.length > 0) && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+                      <div className="font-semibold text-amber-800 mb-2">Pozycje do ręcznej korekty:</div>
+                      <ul className="list-disc pl-5 text-sm text-amber-900 space-y-1">
+                        {lineMissingFields.map((entry) => (
+                          <li key={`modal-missing-${entry.line}`}>
+                            Linia {entry.line}: {entry.fields.map((field) => allFieldLabels[field] || field).join(", ")}
+                          </li>
+                        ))}
+                        {lineIssues.map((entry) => (
+                          <li key={`modal-issue-${entry.line}`}>
+                            Linia {entry.line}: sprawdź zgodność ilości, rabatu, cen netto/brutto i sum tej pozycji.
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
-              ))}
+              )}
+
+              <div>
+                <h3 className="text-lg font-semibold text-gray-800 mb-3">Dane główne faktury</h3>
+                <div className="grid md:grid-cols-2 gap-4">
+                  {[
+                    "seller_name",
+                    "seller_nip",
+                    "seller_address",
+                    "seller_regon",
+                    "buyer_name",
+                    "buyer_nip",
+                    "buyer_address",
+                    "recipient_name",
+                    "recipient_nip",
+                    "recipient_address",
+                    "invoice_number",
+                    "issue_date",
+                    "sale_date",
+                    "place_of_issue",
+                    "currency",
+                    "payment_method",
+                    "payment_due_date",
+                    "payment_date",
+                    "bank_account",
+                    "net_total",
+                    "vat_total",
+                    "gross_total",
+                    "paid",
+                  ].map((field) => (
+                    <div key={field}>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">{mainFieldLabels[field] || field}</label>
+                      <input
+                        type="text"
+                        value={manualData[field] || ""}
+                        onChange={(e) =>
+                          setManualData((prev) => ({
+                            ...prev,
+                            [field]: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <h3 className="text-lg font-semibold text-gray-800">Pozycje faktury</h3>
+                  <button
+                    type="button"
+                    onClick={addManualItem}
+                    className="rounded border border-blue-900 bg-white px-4 py-2 text-sm font-semibold text-blue-900 hover:bg-blue-50"
+                  >
+                    Dodaj pozycję
+                  </button>
+                </div>
+
+                <div className="space-y-5">
+                  {manualItems.map((item, index) => {
+                    const missingForLine = lineMissingFields.find((entry) => entry.line === index + 1)?.fields || [];
+                    const issueForLine = lineIssues.find((entry) => entry.line === index + 1);
+                    const sourceItem = sourceItems[index];
+
+                    return (
+                      <div key={index} className="rounded-xl border border-gray-200 p-4 bg-gray-50">
+                        <div className="flex items-center justify-between gap-3 mb-3">
+                          <div className="font-semibold text-gray-800">Pozycja {index + 1}</div>
+                          {manualItems.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => removeManualItem(index)}
+                              className="rounded border border-red-300 bg-white px-3 py-1 text-sm font-semibold text-red-700 hover:bg-red-50"
+                            >
+                              Usuń
+                            </button>
+                          )}
+                        </div>
+
+                        {sourceItem && (
+                          <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                            <div className="font-semibold mb-1">Odczyt źródłowy</div>
+                            <div>{formatSourceItem(sourceItem)}</div>
+                          </div>
+                        )}
+
+                        {(missingForLine.length > 0 || issueForLine) && (
+                          <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                            {missingForLine.length > 0 && (
+                              <div>
+                                Brakujące pola: {missingForLine.map((field) => allFieldLabels[field] || field).join(", ")}
+                              </div>
+                            )}
+                            {issueForLine && <div>Sprawdź zgodność ilości, rabatu, cen netto/brutto i sum tej pozycji.</div>}
+                          </div>
+                        )}
+
+                        <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+                          {([
+                            ["item_name", "Nazwa pozycji"],
+                            ["quantity", "Ilość"],
+                            ["unit", "Jednostka"],
+                            ["unit_price", "Cena netto po rabacie"],
+                            ["unit_price_before_discount", "Cena netto przed rabatem"],
+                            ["unit_price_gross", "Cena brutto jednostkowa"],
+                            ["discount_percent", "Rabat %"],
+                            ["discount_amount", "Rabat kwotowy"],
+                            ["net_total", "Wartość netto"],
+                            ["vat_rate", "Stawka VAT"],
+                            ["vat_total", "Kwota VAT"],
+                            ["gross_total", "Wartość brutto"],
+                            ["pkwiu", "PKWiU"],
+                            ["gtu", "GTU"],
+                            ["code", "Kod / indeks"],
+                          ] as Array<[keyof ItemDraft, string]>).map(([field, label]) => (
+                            <div key={field}>
+                              <label className="block text-sm font-semibold text-gray-700 mb-1">{label}</label>
+                              <input
+                                type="text"
+                                value={item[field] || ""}
+                                onChange={(e) => updateItemField(index, field, e.target.value)}
+                                className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
 
             <div className="border-t px-6 py-4 flex flex-wrap gap-3">
@@ -920,13 +1262,12 @@ export default function Home() {
               >
                 {loading ? "Generowanie..." : "Generuj XML"}
               </button>
-
               <button
                 type="button"
                 onClick={() => setShowFixModal(false)}
                 className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
               >
-                Anuluj
+                Zamknij
               </button>
             </div>
           </div>
@@ -937,9 +1278,7 @@ export default function Home() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
           <div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl max-h-[90vh] overflow-hidden">
             <div className="flex items-center justify-between border-b px-6 py-4">
-              <h2 className="text-xl font-bold text-gray-800">
-                Instrukcja – co powinna zawierać faktura
-              </h2>
+              <h2 className="text-xl font-bold text-gray-800">Instrukcja</h2>
               <button
                 type="button"
                 onClick={() => setShowInstructions(false)}
@@ -951,23 +1290,24 @@ export default function Home() {
 
             <div className="overflow-y-auto px-6 py-5 text-sm text-gray-700 space-y-5">
               <div>
-                <h3 className="font-semibold text-gray-900 mb-2">
-                  Aby XML przeszedł bez błędów, faktura powinna zawierać:
-                </h3>
+                <h3 className="font-semibold text-gray-900 mb-2">Co potrafi formularz korekty?</h3>
                 <ul className="list-disc pl-5 space-y-1">
-                  <li>dane sprzedawcy: nazwa i NIP,</li>
-                  <li>dane nabywcy: nazwa i NIP,</li>
-                  <li>numer faktury,</li>
-                  <li>datę wystawienia,</li>
-                  <li>datę sprzedaży,</li>
-                  <li>kwotę netto, VAT i brutto,</li>
-                  <li>stawkę VAT,</li>
-                  <li>nazwę towaru lub usługi,</li>
-                  <li>ilość i jednostkę miary,</li>
-                  <li>cenę jednostkową,</li>
-                  <li>termin płatności lub informację, że faktura została opłacona,</li>
-                  <li>opcjonalnie numer rachunku bankowego,</li>
-                  <li>opcjonalnie REGON.</li>
+                  <li>pełna edycja danych sprzedawcy, nabywcy i odbiorcy,</li>
+                  <li>edycja rachunku, dat, płatności, waluty i numeru faktury,</li>
+                  <li>edycja każdej pozycji faktury,</li>
+                  <li>obsługa rabatu procentowego i kwotowego,</li>
+                  <li>kontrola cen netto przed i po rabacie,</li>
+                  <li>pokazanie odczytu źródłowego obok danych edytowanych.</li>
+                </ul>
+              </div>
+
+              <div>
+                <h3 className="font-semibold text-gray-900 mb-2">Kiedy popup się otwiera?</h3>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>gdy brakuje danych głównych,</li>
+                  <li>gdy co najmniej jedna pozycja ma niepełne pola,</li>
+                  <li>gdy matematyka pozycji lub sum wymaga korekty,</li>
+                  <li>gdy backend zwraca dokładne przyczyny blokady.</li>
                 </ul>
               </div>
             </div>
@@ -979,9 +1319,7 @@ export default function Home() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
           <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl overflow-hidden">
             <div className="flex items-center justify-between border-b px-6 py-4">
-              <h2 className="text-xl font-bold text-gray-800">
-                Kontakt z działem technicznym
-              </h2>
+              <h2 className="text-xl font-bold text-gray-800">Kontakt</h2>
               <button
                 type="button"
                 onClick={() => setShowContact(false)}
@@ -993,9 +1331,7 @@ export default function Home() {
 
             <div className="px-6 py-5 space-y-4">
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1">
-                  Do
-                </label>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Adres</label>
                 <input
                   type="text"
                   value="ksefxml@outlook.com"
@@ -1005,9 +1341,7 @@ export default function Home() {
               </div>
 
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1">
-                  Temat
-                </label>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Temat</label>
                 <input
                   type="text"
                   value={contactSubject}
@@ -1017,14 +1351,12 @@ export default function Home() {
               </div>
 
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1">
-                  Wiadomość
-                </label>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Wiadomość</label>
                 <textarea
                   value={contactBody}
                   onChange={(e) => setContactBody(e.target.value)}
                   rows={10}
-                  placeholder="Opisz problem..."
+                  placeholder="Treść wiadomości"
                   className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500"
                 />
               </div>
@@ -1035,15 +1367,14 @@ export default function Home() {
                   onClick={openMailClient}
                   className="rounded bg-blue-900 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
                 >
-                  Otwórz wiadomość e-mail
+                  Otwórz wiadomość
                 </button>
-
                 <button
                   type="button"
                   onClick={() => setShowContact(false)}
                   className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
                 >
-                  Anuluj
+                  Zamknij
                 </button>
               </div>
             </div>
@@ -1055,9 +1386,7 @@ export default function Home() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
           <div className="w-full max-w-4xl rounded-2xl bg-white shadow-2xl max-h-[90vh] overflow-hidden">
             <div className="flex items-center justify-between border-b px-6 py-4">
-              <h2 className="text-xl font-bold text-gray-800">
-                Regulamin i polityka prywatności
-              </h2>
+              <h2 className="text-xl font-bold text-gray-800">Regulamin i polityka prywatności</h2>
               <button
                 type="button"
                 onClick={() => setShowTerms(false)}
@@ -1069,30 +1398,21 @@ export default function Home() {
 
             <div className="overflow-y-auto px-6 py-5 text-sm text-gray-700 space-y-4">
               <p>Generator jest narzędziem pomocniczym i może być w fazie rozwoju.</p>
-              <p>Użytkownik ma obowiązek sprawdzić poprawność danych przed użyciem XML.</p>
+              <p>Każdy wygenerowany XML należy sprawdzić przed użyciem.</p>
               <p>Dane są przetwarzane wyłącznie w celu wygenerowania pliku XML i obsługi technicznej.</p>
-
               <p className="font-medium">Podstawa prawna przetwarzania danych:</p>
               <ul className="list-disc pl-5 space-y-1">
                 <li>art. 6 ust. 1 lit. b RODO – realizacja usługi generowania XML</li>
                 <li>art. 6 ust. 1 lit. f RODO – uzasadniony interes administratora</li>
               </ul>
-
               <p>
-                Dane mogą być przetwarzane przez zewnętrznych dostawców technologicznych,
-                w tym OpenAI, w celu analizy dokumentów i wygenerowania danych XML.
+                Dane mogą być przetwarzane przez zewnętrznych dostawców technologicznych, w tym OpenAI,
+                w celu analizy dokumentów i wygenerowania danych XML.
               </p>
-
               <p>
-                Dane mogą być przekazywane poza Europejski Obszar Gospodarczy (np. do USA)
-                z zastosowaniem odpowiednich zabezpieczeń.
+                Dane mogą być przekazywane poza Europejski Obszar Gospodarczy z zastosowaniem odpowiednich zabezpieczeń.
               </p>
-
-              <p>
-                Dane nie są przechowywane dłużej niż to konieczne do realizacji usługi
-                i nie są archiwizowane.
-              </p>
-
+              <p>Dane nie są przechowywane dłużej niż to konieczne do realizacji usługi i nie są archiwizowane.</p>
               <p className="font-medium text-red-600">
                 Administrator nie ponosi odpowiedzialności za błędy w wygenerowanych danych XML.
               </p>
@@ -1109,7 +1429,6 @@ export default function Home() {
               >
                 Akceptuję
               </button>
-
               <button
                 type="button"
                 onClick={() => setShowTerms(false)}
@@ -1126,15 +1445,14 @@ export default function Home() {
         <div className="fixed bottom-0 left-0 right-0 z-50 border-t bg-black text-white">
           <div className="mx-auto max-w-6xl px-4 py-3 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
             <p className="text-sm text-white/90">
-              Ta strona wykorzystuje pliki cookies niezbędne do prawidłowego działania serwisu. Korzystając ze strony, akceptujesz ich użycie.
+              Strona wykorzystuje pliki cookies niezbędne do prawidłowego działania serwisu.
             </p>
-
             <button
               type="button"
               onClick={() => setShowCookies(false)}
               className="rounded bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-gray-200"
             >
-              OK
+              Zamknij
             </button>
           </div>
         </div>

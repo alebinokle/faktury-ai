@@ -673,14 +673,11 @@ export default function Home() {
                       onClick={() => handleAddTestCredits(30)}
                       className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
                     >
-                      Dodaj testowo 30 kredytów
+                      Dodaj 30 kredytów
                     </button>
                   </div>
 
-                  <div className="mt-2 text-xs text-blue-900/80">
-                    To jest sekcja testowa. Później możesz tu podpiąć prawdziwe płatności.
                   </div>
-                </div>
 
                 <div className="flex flex-wrap gap-2">
                   <button

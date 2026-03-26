@@ -27,6 +27,7 @@ type InvoiceItem = {
   vat_rate: string | null;
   vat_total: string | null;
   gross_total: string | null;
+  unit_price_gross?: string | null;
   pkwiu?: string | null;
   gtu?: string | null;
   code?: string | null;
@@ -209,7 +210,6 @@ function normalizeVatRate(value: string | null | undefined): string {
   const cleaned = raw.replace("%", "");
   const num = Number(cleaned);
   if (Number.isNaN(num)) return cleaned;
-  if (num === 7) return "8";
   return String(Number.isInteger(num) ? num : Number(num.toFixed(2)));
 }
 
@@ -337,6 +337,7 @@ function normalizeItem(item: Partial<InvoiceItem>): InvoiceItem {
     vat_rate: normalizeVatRate(item.vat_rate) || null,
     vat_total: normalizeDecimal(item.vat_total, 2) || null,
     gross_total: normalizeDecimal(item.gross_total, 2) || null,
+    unit_price_gross: normalizeDecimal(item.unit_price_gross, 2) || null,
     pkwiu: normalizeSpaces(item.pkwiu) || null,
     gtu: normalizeSpaces(item.gtu) || null,
     code: normalizeSpaces(item.code) || null,
@@ -347,7 +348,7 @@ function normalizeItems(items: Partial<InvoiceItem>[] | null | undefined): Invoi
   if (!Array.isArray(items)) return [];
   return items
     .map(normalizeItem)
-    .filter((item) => item.item_name || item.net_total || item.unit_price || item.quantity || item.code || item.pkwiu);
+    .filter((item) => item.item_name || item.net_total || item.gross_total || item.unit_price || item.quantity || item.code || item.pkwiu);
 }
 
 function buildLegacySingleItem(data: InvoiceData): InvoiceItem[] {
@@ -405,6 +406,40 @@ function repairSingleItemMath(item: InvoiceItem): {
   const hasQty = !Number.isNaN(qty) && qty > 0;
   const hasUnitPrice = !Number.isNaN(unitPrice) && unitPrice >= 0;
   const hasNet = !Number.isNaN(net) && net >= 0;
+  const hasGross = !Number.isNaN(gross) && gross >= 0;
+
+  if (Number.isNaN(unitPrice) && hasQty && hasNet) {
+    const derivedUnitPrice = round2(net / qty);
+    if (derivedUnitPrice >= 0) {
+      result.unit_price = derivedUnitPrice.toFixed(2);
+      unitPrice = derivedUnitPrice;
+      repaired = true;
+    }
+  }
+
+  if (Number.isNaN(vat) && hasNet && hasGross) {
+    result.vat_total = round2(gross - net).toFixed(2);
+    vat = toNum(result.vat_total);
+    repaired = true;
+  }
+
+  if ((!result.net_total || result.net_total === "") && hasQty && hasUnitPrice) {
+    result.net_total = round2(qty * unitPrice).toFixed(2);
+    net = toNum(result.net_total);
+    repaired = true;
+  }
+
+  if ((!result.vat_total || result.vat_total === "") && !Number.isNaN(net) && !Number.isNaN(rateNum)) {
+    result.vat_total = round2((net * rateNum) / 100).toFixed(2);
+    vat = toNum(result.vat_total);
+    repaired = true;
+  }
+
+  if ((!result.gross_total || result.gross_total === "") && !Number.isNaN(net) && !Number.isNaN(vat)) {
+    result.gross_total = round2(net + vat).toFixed(2);
+    gross = toNum(result.gross_total);
+    repaired = true;
+  }
 
   if (hasQty && hasUnitPrice && hasNet) {
     const calculatedNet = round2(qty * unitPrice);
@@ -430,24 +465,6 @@ function repairSingleItemMath(item: InvoiceItem): {
         }
       }
     }
-  }
-
-  if ((!result.net_total || result.net_total === "") && hasQty && hasUnitPrice) {
-    result.net_total = round2(qty * unitPrice).toFixed(2);
-    net = toNum(result.net_total);
-    repaired = true;
-  }
-
-  if ((!result.vat_total || result.vat_total === "") && !Number.isNaN(net) && !Number.isNaN(rateNum)) {
-    result.vat_total = round2((net * rateNum) / 100).toFixed(2);
-    vat = toNum(result.vat_total);
-    repaired = true;
-  }
-
-  if ((!result.gross_total || result.gross_total === "") && !Number.isNaN(net) && !Number.isNaN(vat)) {
-    result.gross_total = round2(net + vat).toFixed(2);
-    gross = toNum(result.gross_total);
-    repaired = true;
   }
 
   if (!Number.isNaN(net) && !Number.isNaN(vat) && !Number.isNaN(gross)) {
@@ -588,6 +605,14 @@ function finalizeData(raw: InvoiceData): InvoiceData {
   data.vat_total = normalizeDecimal(data.vat_total, 2) || totalsFromItems.vat_total;
   data.gross_total = normalizeDecimal(data.gross_total, 2) || totalsFromItems.gross_total;
 
+  if (!data.gross_total && data.net_total && data.vat_total) {
+    const net = Number(data.net_total);
+    const vat = Number(data.vat_total);
+    if (!Number.isNaN(net) && !Number.isNaN(vat)) {
+      data.gross_total = (net + vat).toFixed(2);
+    }
+  }
+
   if (data.paid == null) {
     if (data.payment_date) data.paid = true;
     else if (data.payment_due_date) data.paid = false;
@@ -708,7 +733,7 @@ function buildXml(data: InvoiceData): string {
     <KodFormularza kodSystemowy="FA (3)" wersjaSchemy="1-0E">FA</KodFormularza>
     <WariantFormularza>3</WariantFormularza>
     <DataWytworzeniaFa>${escapeXml(formatMidnightZulu(issueDate))}</DataWytworzeniaFa>
-    <SystemInfo>Wygenerowano lokalnie</SystemInfo>
+    <SystemInfo>Wygenerowano na ksefxml.pl</SystemInfo>
   </Naglowek>
   <Podmiot1>
     <DaneIdentyfikacyjne>
@@ -774,6 +799,8 @@ Masz poprawnie odczytać polskie faktury w bardzo różnych układach:
 - faktury z tabelą pozycji w różnych kolejnościach kolumn
 - faktury ze starym layoutem, kodami PKWiU/GTU/kodami towarów
 - faktury PDF lub zdjęcia/skany
+- faktury z pozycjami wielowierszowymi
+- faktury, gdzie netto i brutto bywają podawane w tej samej pozycji jedna pod drugą
 
 ZASADY OGÓLNE:
 - nie zgaduj danych
@@ -818,22 +845,25 @@ BARDZO WAŻNE DLA TABELI POZYCJI:
   - kwota VAT to osobna kolumna
   - wartość brutto to osobna kolumna
 - jeśli tabela ma kolumny w innej kolejności, odczytaj je po NAGŁÓWKACH, nie po pozycji
+- jeśli tabela zawiera pozycje wielowierszowe, połącz linie należące do tej samej pozycji
 - jeśli w jednej linii są jednocześnie kod i nazwa, item_name ma zawierać nazwę, a code/pkwiu/gtu odczytaj osobno gdy występują
-- jeśli VAT jest podany jako 7%, zachowaj odczyt z dokumentu
+- jeśli VAT jest podany jako 7%, zachowaj 7%, nie zamieniaj go na 8%
 - dla każdej pozycji postaraj się odczytać:
   item_name, quantity, unit, unit_price, net_total, vat_rate, vat_total, gross_total, pkwiu, gtu, code
 - jeśli pozycja nie ma brutto, ustaw gross_total=null
 - jeśli pozycja nie ma kwoty VAT, ustaw vat_total=null
 - jeśli pozycja ma tylko wartość netto i stawkę VAT, nie wyliczaj nic samodzielnie, ustaw brakujące pola null
+- jeśli pozycja ma wartość netto i wartość brutto, zwróć obie wartości
+- jeśli na fakturze widać cenę jednostkową brutto, zwróć ją jako unit_price_gross
 
 WYMUSZENIA JAKOŚCI:
 - jeśli faktura ma więcej niż 1 pozycję, w items muszą być wszystkie pozycje
 - nie kopiuj sumy "Razem" jako osobnej pozycji
-- nie kopiuj wierszy "W tym", "Razem", "Podsumowanie", "Do zapłaty" jako itemów
+- nie kopiuj wierszy "W tym", "Razem", "Podsumowanie", "Do zapłaty", "Pozostało do zapłaty" jako itemów
 - nie zamieniaj "Odbiorca" na "Nabywca", jeśli obie sekcje są obecne
 - nie traktuj numerów kont, kodów kreskowych ani numeru zamówienia jako NIP
 - jeśli na dokumencie jest tylko numer wewnętrzny klienta, to buyer_nip ustaw null
-- jeśli na fakturze są stare układy z 7% VAT, odczytaj je poprawnie z dokumentu
+- jeśli na pozycji brakuje jawnej kwoty VAT, ale dokument pokazuje netto i brutto, zostaw vat_total=null
 
 Zwróć JSON dokładnie w tej strukturze:
 {
@@ -866,6 +896,7 @@ Zwróć JSON dokładnie w tej strukturze:
       "quantity": null,
       "unit": null,
       "unit_price": null,
+      "unit_price_gross": null,
       "net_total": null,
       "vat_rate": null,
       "vat_total": null,
@@ -923,7 +954,7 @@ Najczęstsze błędy do wychwycenia:
 - przesunięcie kolumn w tabeli
 - brak części pozycji przy wielowierszowej fakturze
 - wpisanie kwot z podsumowania zamiast z wiersza pozycji
-- błędne rozpoznanie stawki VAT 7% / 8% / 5%
+- błędne rozpoznanie układu, gdzie netto i brutto są jedna pod drugą
 - wzięcie numeru konta, kodu kreskowego albo numeru zamówienia za NIP albo numer faktury
 
 Masz poprawić JSON i zwrócić WYŁĄCZNIE czysty JSON w tej samej strukturze.
@@ -1083,11 +1114,9 @@ export async function POST(req: Request) {
       if (!item.item_name) lineFields.push("item_name");
       if (!item.quantity) lineFields.push("quantity");
       if (!item.unit) lineFields.push("unit");
-      if (!item.unit_price) lineFields.push("unit_price");
-      if (!item.net_total) lineFields.push("net_total");
+      if (!item.unit_price && !item.net_total) lineFields.push("unit_price_or_net_total");
+      if (!item.net_total && !item.gross_total) lineFields.push("net_total_or_gross_total");
       if (!item.vat_rate) lineFields.push("vat_rate");
-      if (!item.vat_total) lineFields.push("vat_total");
-      if (!item.gross_total) lineFields.push("gross_total");
 
       if (lineFields.length > 0) {
         lineMissingFields.push({ line: index + 1, fields: lineFields });
@@ -1103,18 +1132,18 @@ export async function POST(req: Request) {
     const summedGross = toNum(totalsFromItems.gross_total);
 
     let totalsMismatch = false;
-    if (!Number.isNaN(declaredNet) && !Number.isNaN(summedNet) && !nearlyEqual(declaredNet, summedNet)) totalsMismatch = true;
-    if (!Number.isNaN(declaredVat) && !Number.isNaN(summedVat) && !nearlyEqual(declaredVat, summedVat)) totalsMismatch = true;
-    if (!Number.isNaN(declaredGross) && !Number.isNaN(summedGross) && !nearlyEqual(declaredGross, summedGross)) totalsMismatch = true;
+    if (!Number.isNaN(declaredNet) && !Number.isNaN(summedNet) && !nearlyEqual(declaredNet, summedNet, 0.2)) totalsMismatch = true;
+    if (!Number.isNaN(declaredVat) && !Number.isNaN(summedVat) && !nearlyEqual(declaredVat, summedVat, 0.2)) totalsMismatch = true;
+    if (!Number.isNaN(declaredGross) && !Number.isNaN(summedGross) && !nearlyEqual(declaredGross, summedGross, 0.2)) totalsMismatch = true;
 
     const uniqueMissingFields = [...new Set(missingFields)];
 
-    if (itemCheck.math_problem || lineMissingFields.length > 0 || totalsMismatch || uniqueMissingFields.length > 0) {
+    if (lineMissingFields.length > 0 || uniqueMissingFields.length > 0) {
       return Response.json(
         {
           success: false,
           message:
-            "Brakują wymagane dane, część pozycji ma nieprawidłowy format albo matematyka pozycji nie zgadza się z fakturą.",
+            "Brakują wymagane dane potrzebne do wygenerowania XML. Uzupełnij brakujące pola i spróbuj ponownie.",
           missing_fields: uniqueMissingFields,
           extracted_data: data,
           missing_field_labels: uniqueMissingFields.map((field) => fieldLabels[field] || field),

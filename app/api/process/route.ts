@@ -1,7 +1,6 @@
 import OpenAI from "openai";
 import { PrismaClient } from "@prisma/client";
 import { cookies } from "next/headers";
-import crypto from "node:crypto";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -18,42 +17,6 @@ if (process.env.NODE_ENV !== "production") {
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
-
-const reviewSessions = new Map<
-  string,
-  { userId: string; fileHash: string; fileName: string; createdAt: number }
->();
-
-const REVIEW_SESSION_TTL_MS = 30 * 60 * 1000;
-
-function cleanupReviewSessions() {
-  const now = Date.now();
-  for (const [key, session] of reviewSessions.entries()) {
-    if (now - session.createdAt > REVIEW_SESSION_TTL_MS) reviewSessions.delete(key);
-  }
-}
-
-function createReviewSession(userId: string, fileHash: string, fileName: string) {
-  cleanupReviewSessions();
-  const token = crypto.randomUUID();
-  reviewSessions.set(token, { userId, fileHash, fileName, createdAt: Date.now() });
-  return token;
-}
-
-function verifyReviewSession(token: string, userId: string, fileHash: string, fileName: string) {
-  cleanupReviewSessions();
-  const session = reviewSessions.get(token);
-  if (!session) return false;
-  return session.userId === userId && session.fileHash === fileHash && session.fileName === fileName;
-}
-
-function destroyReviewSession(token: string) {
-  reviewSessions.delete(token);
-}
-
-function buildFileHash(bytes: Buffer, fileName: string, contentType: string) {
-  return crypto.createHash("sha256").update(bytes).update("|").update(fileName).update("|").update(contentType).digest("hex");
-}
 
 type InvoiceItem = {
   item_name: string | null;
@@ -338,20 +301,38 @@ function splitAddress(address: string | null | undefined): { line1: string; line
   const raw = normalizeSpaces(address);
   if (!raw) return { line1: "", line2: "" };
 
-  const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
-  if (parts.length >= 2) return { line1: parts[0], line2: parts.slice(1).join(", ") };
-
-  const postalMatch = raw.match(/^(.*?)(\d{2}-\d{3}.*)$/);
-  if (postalMatch) {
+  const commaParts = raw.split(",").map((p) => p.trim()).filter(Boolean);
+  if (commaParts.length >= 2) {
+    const postalIndex = commaParts.findIndex((p) => /\b\d{2}-\d{3}\b/.test(p));
+    if (postalIndex > 0) {
+      const line1 = commaParts.slice(0, postalIndex).join(", ");
+      const line2 = commaParts.slice(postalIndex).join(", ");
+      return { line1, line2 };
+    }
     return {
-      line1: postalMatch[1].trim().replace(/[,\s]+$/, ""),
-      line2: postalMatch[2].trim(),
+      line1: commaParts[0],
+      line2: commaParts.slice(1).join(", "),
+    };
+  }
+
+  const streetFirst = raw.match(/^(.*?\b\d+[A-Za-z\/-]*)(?:\s+|,\s*)(\d{2}-\d{3}.*)$/);
+  if (streetFirst) {
+    return {
+      line1: streetFirst[1].trim().replace(/[,\s]+$/, ""),
+      line2: streetFirst[2].trim(),
+    };
+  }
+
+  const postalFirst = raw.match(/^(\d{2}-\d{3}[^,]*)(?:\s+|,\s*)(.*)$/);
+  if (postalFirst) {
+    return {
+      line1: postalFirst[2].trim(),
+      line2: postalFirst[1].trim(),
     };
   }
 
   return { line1: raw, line2: "" };
 }
-
 function tag(name: string, value: string | null | undefined): string {
   if (value == null) return "";
   const str = String(value).trim();
@@ -754,6 +735,46 @@ function buildPodmiot3Xml(data: InvoiceData): string {
   </Podmiot3>`;
 }
 
+
+function hasSeparateRecipient(data: InvoiceData): boolean {
+  const recipientName = normalizeSpaces(data.recipient_name);
+  const recipientAddress = normalizeSpaces(data.recipient_address);
+  const recipientNip = normalizeNip(data.recipient_nip);
+
+  if (!recipientName && !recipientAddress && !recipientNip) return false;
+
+  const buyerName = normalizeSpaces(data.buyer_name);
+  const buyerAddress = normalizeSpaces(data.buyer_address);
+  const buyerNip = normalizeNip(data.buyer_nip);
+
+  const sameName = !!recipientName && !!buyerName && recipientName.toLowerCase() === buyerName.toLowerCase();
+  const sameAddress = !!recipientAddress && !!buyerAddress && recipientAddress.toLowerCase() === buyerAddress.toLowerCase();
+  const sameNip = !!recipientNip && !!buyerNip && recipientNip === buyerNip;
+
+  return !(sameName && sameAddress && (!recipientNip || sameNip));
+}
+
+function buildPodmiot3Xml(data: InvoiceData): string {
+  if (!hasSeparateRecipient(data)) return "";
+
+  const recipientAddress = splitAddress(data.recipient_address);
+  const recipientNip = normalizeNip(data.recipient_nip);
+
+  return `
+  <Podmiot3>
+    <DaneIdentyfikacyjne>
+      ${tag("NIP", recipientNip)}
+      ${tag("Nazwa", data.recipient_name)}
+    </DaneIdentyfikacyjne>
+    <Adres>
+      <KodKraju>PL</KodKraju>
+      ${tag("AdresL1", recipientAddress.line1)}
+      ${tag("AdresL2", recipientAddress.line2)}
+    </Adres>
+    <Rola>2</Rola>
+  </Podmiot3>`;
+}
+
 function buildXml(data: InvoiceData): string {
   const sellerNip = normalizeNip(data.seller_nip);
   const buyerNip = normalizeNip(data.buyer_nip);
@@ -769,6 +790,7 @@ function buildXml(data: InvoiceData): string {
 
   const sellerAddress = splitAddress(data.seller_address);
   const buyerAddress = splitAddress(data.buyer_address);
+  const podmiot3Xml = buildPodmiot3Xml(data);
 
   const paymentXml =
     data.paid === true
@@ -875,16 +897,9 @@ function buildXml(data: InvoiceData): string {
 </Faktura>`;
 }
 
-function buildExtractionPrompt(sessionScope: string): string {
+function buildExtractionPrompt(): string {
   return `
 Wyciągnij dane z faktury i zwróć WYŁĄCZNIE czysty JSON.
-
-BARDZO WAŻNE ZASADY IZOLACJI:
-- analizujesz tylko ten jeden dokument
-- nie używaj żadnych danych z wcześniejszych analiz
-- nie dopisuj nazw towarów, kontrahentów ani pozycji z pamięci
-- jeśli coś jest nieczytelne, ustaw null
-- identyfikator sesji tej analizy: ${sessionScope}
 
 BARDZO WAŻNE:
 - buyer_* = dane Nabywcy
@@ -946,8 +961,8 @@ Struktura:
 }`;
 }
 
-async function extractInvoiceData(file: File, base64: string, sessionScope: string): Promise<InvoiceData> {
-  const content: InputContent[] = [{ type: "input_text", text: buildExtractionPrompt(sessionScope) }];
+async function extractInvoiceData(file: File, base64: string): Promise<InvoiceData> {
+  const content: InputContent[] = [{ type: "input_text", text: buildExtractionPrompt() }];
 
   if (file.type.startsWith("image/")) {
     content.push({
@@ -971,14 +986,9 @@ async function extractInvoiceData(file: File, base64: string, sessionScope: stri
   return parseInvoiceJson(extractOutputText(response));
 }
 
-async function validateWithSecondPass(file: File, base64: string, firstPassData: InvoiceData, sessionScope: string): Promise<InvoiceData> {
+async function validateWithSecondPass(file: File, base64: string, firstPassData: InvoiceData): Promise<InvoiceData> {
   const prompt = `
 Sprawdź i popraw JSON z faktury.
-
-BARDZO WAŻNE ZASADY IZOLACJI:
-- analizujesz wyłącznie bieżący dokument
-- nie używaj danych z wcześniejszych analiz ani innych użytkowników
-- identyfikator sesji tej analizy: ${sessionScope}
 
 Najważniejsze:
 - odróżnij Nabywcę od Odbiorcy
@@ -1041,28 +1051,6 @@ function buildValidationDetails(
   return details;
 }
 
-function buildInvalidFieldDetails(data: InvoiceData): { invalidFields: string[]; invalidDetails: string[] } {
-  const invalidFields: string[] = [];
-  const invalidDetails: string[] = [];
-
-  const checks: Array<{ key: "seller_nip" | "buyer_nip" | "recipient_nip"; value: string | null | undefined; label: string }> = [
-    { key: "seller_nip", value: data.seller_nip, label: "NIP sprzedawcy" },
-    { key: "buyer_nip", value: data.buyer_nip, label: "NIP nabywcy" },
-    { key: "recipient_nip", value: data.recipient_nip, label: "NIP odbiorcy" },
-  ];
-
-  for (const check of checks) {
-    const normalized = normalizeNip(check.value);
-    if (!normalized) continue;
-    if (!hasNipFormat(normalized)) {
-      invalidFields.push(check.key);
-      invalidDetails.push(`${check.label} ma nieprawidłowy format: "${normalized}". Prawidłowy NIP powinien mieć dokładnie 10 cyfr.`);
-    }
-  }
-
-  return { invalidFields, invalidDetails };
-}
-
 export async function POST(req: Request) {
   try {
     if (!process.env.OPENAI_API_KEY) {
@@ -1080,8 +1068,6 @@ export async function POST(req: Request) {
       typeof manualDataRaw === "string" && manualDataRaw.trim()
         ? (JSON.parse(manualDataRaw) as Record<string, unknown>)
         : {};
-    const manualDataConfirmed = String(formData.get("manualDataConfirmed") || "false") === "true";
-    const reviewToken = String(formData.get("reviewToken") || "").trim();
 
     if (!file) {
       return Response.json({ success: false, message: "Nie wybrano pliku." }, { status: 400 });
@@ -1113,30 +1099,13 @@ export async function POST(req: Request) {
       return Response.json({ success: false, message: "Brak kredytów na koncie.", credits_left: 0 }, { status: 402 });
     }
 
-    const bytesArrayBuffer = await file.arrayBuffer();
-    const bytes = Buffer.from(bytesArrayBuffer);
-    const base64 = bytes.toString("base64");
-    const fileHash = buildFileHash(bytes, file.name, file.type);
-    const sessionScope = `${freshUser.id.slice(0, 8)}:${fileHash.slice(0, 12)}`;
-
-    if (manualDataConfirmed && !reviewToken) {
-      return Response.json(
-        { success: false, message: "Brak tokenu zatwierdzonej sesji analizy. Wgraj dokument ponownie." },
-        { status: 409 }
-      );
-    }
-
-    if (manualDataConfirmed && !verifyReviewSession(reviewToken, freshUser.id, fileHash, file.name)) {
-      return Response.json(
-        { success: false, message: "Sesja analizy wygasła albo nie pasuje do bieżącego dokumentu. Wgraj dokument ponownie." },
-        { status: 409 }
-      );
-    }
+    const bytes = await file.arrayBuffer();
+    const base64 = Buffer.from(bytes).toString("base64");
 
     let data: InvoiceData;
     try {
-      const firstPass = await extractInvoiceData(file, base64, sessionScope);
-      const secondPass = await validateWithSecondPass(file, base64, firstPass, sessionScope);
+      const firstPass = await extractInvoiceData(file, base64);
+      const secondPass = await validateWithSecondPass(file, base64, firstPass);
       data = secondPass;
     } catch (parseError) {
       console.error("Błąd odczytu modelu:", parseError);
@@ -1179,7 +1148,9 @@ export async function POST(req: Request) {
       }
     }
 
-    const { invalidFields, invalidDetails } = buildInvalidFieldDetails(data);
+    if (data.seller_nip && !hasNipFormat(data.seller_nip)) missingFields.push("seller_nip");
+    if (data.buyer_nip && !hasNipFormat(data.buyer_nip)) missingFields.push("buyer_nip");
+    if (data.recipient_nip && !hasNipFormat(data.recipient_nip)) missingFields.push("recipient_nip");
 
     const lineMissingFields: LineIssue[] = [];
     data.items.forEach((item, index) => {
@@ -1206,54 +1177,14 @@ export async function POST(req: Request) {
     if (!Number.isNaN(declaredGross) && !Number.isNaN(summedGross) && !nearlyEqual(declaredGross, summedGross, 0.2)) totalsMismatch = true;
 
     const uniqueMissingFields = [...new Set(missingFields)];
-    const validationDetails = [
-      ...buildValidationDetails(data, lineMissingFields, totalsFromItems, totalsMismatch),
-      ...invalidDetails,
-    ];
+    const validationDetails = buildValidationDetails(data, lineMissingFields, totalsFromItems, totalsMismatch);
 
-    if (!manualDataConfirmed) {
-      const newReviewToken = createReviewSession(freshUser.id, fileHash, file.name);
+    if (itemCheck.math_problem || lineMissingFields.length > 0 || totalsMismatch || uniqueMissingFields.length > 0 || validationDetails.length > 0) {
       return Response.json(
         {
           success: false,
-          requires_confirmation: true,
-          review_token: newReviewToken,
-          session_scope: sessionScope,
-          message: "Przed wygenerowaniem XML sprawdź i zatwierdź wszystkie dane faktury.",
+          message: "Brakują wymagane dane lub co najmniej jedna pozycja wymaga ręcznej korekty.",
           missing_fields: uniqueMissingFields,
-          invalid_fields: invalidFields,
-          extracted_data: data,
-          missing_field_labels: uniqueMissingFields.map((field) => fieldLabels[field] || field),
-          math_problem: itemCheck.math_problem,
-          auto_repaired: itemCheck.repaired,
-          line_issues: itemCheck.line_issues,
-          line_missing_fields: lineMissingFields,
-          totals_mismatch: totalsMismatch,
-          totals_from_items: totalsFromItems,
-          validation_details: validationDetails,
-          credits_left: freshUser.credits,
-        },
-        { status: 409 }
-      );
-    }
-
-    if (
-      itemCheck.math_problem ||
-      lineMissingFields.length > 0 ||
-      totalsMismatch ||
-      uniqueMissingFields.length > 0 ||
-      invalidFields.length > 0 ||
-      validationDetails.length > 0
-    ) {
-      return Response.json(
-        {
-          success: false,
-          requires_confirmation: true,
-          review_token: reviewToken,
-          session_scope: sessionScope,
-          message: "Formularz wymaga dalszej korekty. XML nie został jeszcze wygenerowany.",
-          missing_fields: uniqueMissingFields,
-          invalid_fields: invalidFields,
           extracted_data: data,
           missing_field_labels: uniqueMissingFields.map((field) => fieldLabels[field] || field),
           math_problem: itemCheck.math_problem,
@@ -1271,7 +1202,6 @@ export async function POST(req: Request) {
 
     const safeInvoiceNumber = buildSafeFilename(data.invoice_number);
     const xml = buildXml(data);
-    destroyReviewSession(reviewToken);
 
     const [, updatedUser] = await prisma.$transaction([
       prisma.user.update({

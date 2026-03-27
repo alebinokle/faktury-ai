@@ -1309,7 +1309,6 @@ export async function POST(req: Request) {
     const uniqueMissingFields = [...new Set(missingFields)];
     const validationDetails = buildValidationDetails(data, lineMissingFields, totalsFromItems, totalsMismatch);
 
-<<<<<<< HEAD
     if (!manualDataConfirmed) {
       const newReviewToken = createReviewSession(freshUser.id, fileHash, file.name);
       return Response.json(
@@ -1351,7 +1350,6 @@ export async function POST(req: Request) {
           review_token: reviewToken,
           session_scope: sessionScope,
           message: "Formularz wymaga dalszej korekty. XML nie został jeszcze wygenerowany.",
-=======
     if (itemCheck.math_problem || lineMissingFields.length > 0 || totalsMismatch || uniqueMissingFields.length > 0 || validationDetails.length > 0) {
       return Response.json(
         {

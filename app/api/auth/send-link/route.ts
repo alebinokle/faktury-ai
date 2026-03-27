@@ -61,13 +61,14 @@ export async function POST(req: Request) {
       "http://localhost:3000";
 
     const resend = new Resend(resendKey);
+
     const token = randomBytes(32).toString("hex");
 
     await prisma.loginToken.create({
       data: {
         email,
         token,
-        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 min
       },
     });
 
@@ -81,17 +82,30 @@ export async function POST(req: Request) {
         <div style="font-family:Arial,sans-serif;line-height:1.6">
           <h2>Logowanie do KSeF XML</h2>
           <p>Kliknij przycisk poniżej, aby się zalogować:</p>
+
           <p>
             <a
               href="${link}"
-              style="display:inline-block;padding:12px 18px;background:#1d4ed8;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:bold"
+              style="
+                display:inline-block;
+                padding:12px 18px;
+                background:#1d4ed8;
+                color:#ffffff;
+                text-decoration:none;
+                border-radius:8px;
+                font-weight:bold;
+              "
             >
               Zaloguj się
             </a>
           </p>
+
           <p>Jeśli przycisk nie działa, użyj tego linku:</p>
           <p style="word-break:break-all">${link}</p>
-          <p>Link ważny 15 minut.</p>
+
+          <p style="margin-top:20px;font-size:12px;color:#666;">
+            Link ważny 15 minut.
+          </p>
         </div>
       `,
       text: `Zaloguj się: ${link}\n\nLink ważny 15 minut.`,
@@ -103,7 +117,7 @@ export async function POST(req: Request) {
       return Response.json(
         {
           success: false,
-          message: `Resend error: ${result.error.message}`,
+          message: `Błąd wysyłki: ${result.error.message}`,
         },
         { status: 500 }
       );
@@ -111,10 +125,10 @@ export async function POST(req: Request) {
 
     return Response.json({
       success: true,
-      message: "Link logowania został wysłany na podany adres e-mail.",
+      message: "Link logowania został wysłany.",
     });
   } catch (error) {
-    console.error("BŁĄD SEND-LINK:", error);
+    console.error("SEND-LINK ERROR:", error);
 
     return Response.json(
       {
@@ -122,7 +136,7 @@ export async function POST(req: Request) {
         message:
           error instanceof Error
             ? error.message
-            : "Nie udało się wysłać linku logowania.",
+            : "Nie udało się wysłać linku.",
       },
       { status: 500 }
     );

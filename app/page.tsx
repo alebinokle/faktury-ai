@@ -20,6 +20,10 @@ type ApiErrorResponse = {
   auto_repaired?: boolean;
   math_problem?: boolean;
   validation_details?: string[];
+  invalid_fields?: string[];
+  requires_confirmation?: boolean;
+  review_token?: string;
+  session_scope?: string;
 };
 
 type ManualFieldMap = Record<string, string>;
@@ -175,6 +179,7 @@ export default function Home() {
   const [result, setResult] = useState("");
   const [loading, setLoading] = useState(false);
   const [missingFields, setMissingFields] = useState<string[]>([]);
+  const [invalidFields, setInvalidFields] = useState<string[]>([]);
   const [status, setStatus] = useState<"idle" | "success" | "error" | "info">("idle");
   const [generatedXml, setGeneratedXml] = useState("");
   const [generatedFilename, setGeneratedFilename] = useState("faktura.xml");
@@ -209,6 +214,8 @@ export default function Home() {
   const [mathProblem, setMathProblem] = useState(false);
   const [validationDetails, setValidationDetails] = useState<string[]>([]);
   const [modalErrors, setModalErrors] = useState<string[]>([]);
+  const [reviewToken, setReviewToken] = useState("");
+  const [sessionScope, setSessionScope] = useState("");
 
   const [contactSubject, setContactSubject] = useState("Pomoc techniczna – ksefxml.pl");
   const [contactBody, setContactBody] = useState("");
@@ -294,7 +301,7 @@ export default function Home() {
     })),
   });
 
-  const seedManualEditors = (missing: string[], extracted: Record<string, unknown>, err?: ApiErrorResponse) => {
+  const seedManualEditors = (missing: string[], invalid: string[], extracted: Record<string, unknown>, err?: ApiErrorResponse) => {
     const initialManualData: ManualFieldMap = {};
     const mainKeys = [
       "seller_nip",
@@ -325,7 +332,7 @@ export default function Home() {
     for (const key of mainKeys) {
       if (key in extracted) initialManualData[key] = valueToString(extracted[key]);
     }
-    for (const field of missing) {
+    for (const field of [...missing, ...invalid]) {
       if (!(field in initialManualData)) initialManualData[field] = valueToString(extracted[field]);
     }
 
@@ -364,11 +371,17 @@ export default function Home() {
     setMathProblem(Boolean(err?.math_problem));
     setValidationDetails(err?.validation_details || []);
     setModalErrors([]);
+    setReviewToken(err?.review_token || "");
+    setSessionScope(err?.session_scope || "");
     setCanReopenFixModal(true);
   };
 
   const validateBeforeSubmit = (): string[] => {
     const errors: string[] = [];
+
+    if (!reviewToken) {
+      errors.push("Brakuje tokenu sesji analizy. Wgraj dokument ponownie.");
+    }
 
     if ((manualData.paid || "").toLowerCase() === "true" && !(manualData.payment_date || "").trim()) {
       errors.push("Zaznaczono fakturę jako opłaconą, ale brakuje daty zapłaty.");
@@ -433,6 +446,7 @@ export default function Home() {
 
     const err: ApiErrorResponse = await res.json();
     const missing = err.missing_fields || [];
+    const invalid = err.invalid_fields || [];
     const extracted = (err.extracted_data || {}) as Record<string, unknown>;
 
     if (typeof err.credits_left === "number") setCredits(err.credits_left);
@@ -454,10 +468,11 @@ export default function Home() {
       return;
     }
 
-    setStatus("error");
+    setStatus(err.requires_confirmation ? "info" : "error");
     setMessage(err.message || "Formularz wymaga dalszej korekty. XML nie został jeszcze wygenerowany.");
     setMissingFields(missing);
-    seedManualEditors(missing, extracted, err);
+    setInvalidFields(invalid);
+    seedManualEditors(missing, invalid, extracted, err);
     setResult(JSON.stringify(err, null, 2));
     setShowFixModal(true);
   };
@@ -579,9 +594,10 @@ export default function Home() {
     try {
       setLoading(true);
       setStatus("info");
-      setMessage("Trwa przetwarzanie faktury...");
+      setMessage("Trwa analiza dokumentu. XML zostanie wygenerowany dopiero po zatwierdzeniu formularza.");
       setResult("");
       setMissingFields([]);
+      setInvalidFields([]);
       setLineMissingFields([]);
       setLineIssues([]);
       setValidationDetails([]);
@@ -591,30 +607,14 @@ export default function Home() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("manualData", JSON.stringify({}));
+      formData.append("manualDataConfirmed", "false");
 
       const res = await fetch("/api/process", { method: "POST", body: formData });
-      const disposition = res.headers.get("content-disposition") || "";
-      const creditsLeftHeader = res.headers.get("x-credits-left");
 
       if (!res.ok) return await handleProcessResponseError(res);
 
-      const text = await res.text();
-      let filename = "faktura.xml";
-      const match = disposition.match(/filename="([^"]+)"/i);
-      if (match?.[1]) filename = match[1];
-
-      if (creditsLeftHeader !== null) {
-        const parsedCredits = Number(creditsLeftHeader);
-        if (!Number.isNaN(parsedCredits)) setCredits(parsedCredits);
-      }
-
-      setGeneratedXml(text);
-      setGeneratedFilename(filename);
-      setResult(text);
-      setStatus("success");
-      setMessage("Plik XML został wygenerowany.");
-      setCanReopenFixModal(false);
-      downloadXmlFromValues(text, filename);
+      setStatus("error");
+      setMessage("Nieoczekiwana odpowiedź serwera. XML nie powinien być generowany bez akceptacji formularza.");
     } catch (error) {
       console.error(error);
       setStatus("error");
@@ -646,6 +646,8 @@ export default function Home() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("manualData", JSON.stringify(buildManualPayload()));
+      formData.append("manualDataConfirmed", "true");
+      formData.append("reviewToken", reviewToken);
 
       const res = await fetch("/api/process", { method: "POST", body: formData });
       const disposition = res.headers.get("content-disposition") || "";
@@ -670,10 +672,12 @@ export default function Home() {
       setGeneratedFilename(filename);
       setResult(text);
       setStatus("success");
-      setMessage("Plik XML został wygenerowany.");
+      setMessage("Plik XML został wygenerowany po zatwierdzeniu formularza.");
       setShowFixModal(false);
       setModalErrors([]);
       setCanReopenFixModal(false);
+      setReviewToken("");
+      setSessionScope("");
       downloadXmlFromValues(text, filename);
     } catch (error) {
       console.error(error);
@@ -707,6 +711,7 @@ export default function Home() {
     setMessage("");
     setResult("");
     setMissingFields([]);
+    setInvalidFields([]);
     setLineMissingFields([]);
     setLineIssues([]);
     setValidationDetails([]);
@@ -714,6 +719,8 @@ export default function Home() {
     setStatus("idle");
     setShowFixModal(false);
     setCanReopenFixModal(false);
+    setReviewToken("");
+    setSessionScope("");
   };
 
   if (checkingLogin) {
@@ -899,7 +906,7 @@ export default function Home() {
               disabled={loading || !acceptedTerms || !loggedIn}
               className="flex-1 min-w-[180px] bg-blue-900 text-white py-2 rounded hover:bg-blue-800 transition font-semibold disabled:opacity-70 disabled:cursor-not-allowed"
             >
-              {loading ? "Przetwarzanie..." : "Generuj XML"}
+              {loading ? "Analiza..." : "Analizuj dokument"}
             </button>
 
             <button
@@ -944,6 +951,12 @@ export default function Home() {
               {message}
             </div>
 
+            {sessionScope && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 mb-4">
+                Bieżąca sesja analizy: <span className="font-semibold">{sessionScope}</span>
+              </div>
+            )}
+
             {(autoRepaired || mathProblem || totalsMismatch) && (
               <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 space-y-1 mb-4">
                 {autoRepaired && <div>System automatycznie uzupełnił część brakujących wartości.</div>}
@@ -973,6 +986,17 @@ export default function Home() {
                 <div className="font-semibold text-amber-800 mb-2">Brakujące pola główne:</div>
                 <ul className="list-disc pl-5 text-sm text-amber-900 space-y-1">
                   {missingFields.map((field) => (
+                    <li key={field}>{allFieldLabels[field] || field}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {invalidFields.length > 0 && (
+              <div className="rounded-lg border border-orange-200 bg-orange-50 px-4 py-3 mb-4">
+                <div className="font-semibold text-orange-800 mb-2">Pola z nieprawidłowym formatem:</div>
+                <ul className="list-disc pl-5 text-sm text-orange-900 space-y-1">
+                  {invalidFields.map((field) => (
                     <li key={field}>{allFieldLabels[field] || field}</li>
                   ))}
                 </ul>
@@ -1052,7 +1076,17 @@ export default function Home() {
             </div>
 
             <div className="overflow-y-auto px-6 py-5 space-y-6 max-h-[76vh]">
-              {(missingFields.length > 0 || lineMissingFields.length > 0 || lineIssues.length > 0 || validationDetails.length > 0 || totalsMismatch || autoRepaired || mathProblem || modalErrors.length > 0) && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
+                XML zostanie wygenerowany dopiero po ręcznym sprawdzeniu i zatwierdzeniu wszystkich danych.
+              </div>
+
+              {sessionScope && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                  Sesja analizy: <span className="font-semibold">{sessionScope}</span>
+                </div>
+              )}
+
+              {(missingFields.length > 0 || invalidFields.length > 0 || lineMissingFields.length > 0 || lineIssues.length > 0 || validationDetails.length > 0 || totalsMismatch || autoRepaired || mathProblem || modalErrors.length > 0) && (
                 <div className="space-y-4">
                   {modalErrors.length > 0 && (
                     <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
@@ -1065,7 +1099,13 @@ export default function Home() {
                     </div>
                   )}
 
-                  {(autoRepaired || mathProblem || totalsMismatch) && (
+                  {sessionScope && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 mb-4">
+                Bieżąca sesja analizy: <span className="font-semibold">{sessionScope}</span>
+              </div>
+            )}
+
+            {(autoRepaired || mathProblem || totalsMismatch) && (
                     <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 space-y-1">
                       {autoRepaired && <div>System automatycznie uzupełnił część brakujących wartości.</div>}
                       {mathProblem && <div>Co najmniej jedna pozycja wymaga sprawdzenia matematyki lub rabatu.</div>}
@@ -1100,7 +1140,18 @@ export default function Home() {
                     </div>
                   )}
 
-                  {(lineMissingFields.length > 0 || lineIssues.length > 0) && (
+                  {invalidFields.length > 0 && (
+              <div className="rounded-lg border border-orange-200 bg-orange-50 px-4 py-3 mb-4">
+                <div className="font-semibold text-orange-800 mb-2">Pola z nieprawidłowym formatem:</div>
+                <ul className="list-disc pl-5 text-sm text-orange-900 space-y-1">
+                  {invalidFields.map((field) => (
+                    <li key={field}>{allFieldLabels[field] || field}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {(lineMissingFields.length > 0 || lineIssues.length > 0) && (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
                       <div className="font-semibold text-amber-800 mb-2">Pozycje do ręcznej korekty:</div>
                       <ul className="list-disc pl-5 text-sm text-amber-900 space-y-1">
@@ -1260,7 +1311,7 @@ export default function Home() {
                 className="rounded bg-blue-900 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
                 disabled={loading}
               >
-                {loading ? "Generowanie..." : "Generuj XML"}
+                {loading ? "Generowanie..." : "Akceptuję dane i generuję XML"}
               </button>
               <button
                 type="button"

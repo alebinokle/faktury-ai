@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { PrismaClient } from "@prisma/client";
 import { cookies } from "next/headers";
+import crypto from "node:crypto";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -17,6 +18,42 @@ if (process.env.NODE_ENV !== "production") {
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+const reviewSessions = new Map<
+  string,
+  { userId: string; fileHash: string; fileName: string; createdAt: number }
+>();
+
+const REVIEW_SESSION_TTL_MS = 30 * 60 * 1000;
+
+function cleanupReviewSessions() {
+  const now = Date.now();
+  for (const [key, session] of reviewSessions.entries()) {
+    if (now - session.createdAt > REVIEW_SESSION_TTL_MS) reviewSessions.delete(key);
+  }
+}
+
+function createReviewSession(userId: string, fileHash: string, fileName: string) {
+  cleanupReviewSessions();
+  const token = crypto.randomUUID();
+  reviewSessions.set(token, { userId, fileHash, fileName, createdAt: Date.now() });
+  return token;
+}
+
+function verifyReviewSession(token: string, userId: string, fileHash: string, fileName: string) {
+  cleanupReviewSessions();
+  const session = reviewSessions.get(token);
+  if (!session) return false;
+  return session.userId === userId && session.fileHash === fileHash && session.fileName === fileName;
+}
+
+function destroyReviewSession(token: string) {
+  reviewSessions.delete(token);
+}
+
+function buildFileHash(bytes: Buffer, fileName: string, contentType: string) {
+  return crypto.createHash("sha256").update(bytes).update("|").update(fileName).update("|").update(contentType).digest("hex");
+}
 
 type InvoiceItem = {
   item_name: string | null;
@@ -838,9 +875,16 @@ function buildXml(data: InvoiceData): string {
 </Faktura>`;
 }
 
-function buildExtractionPrompt(): string {
+function buildExtractionPrompt(sessionScope: string): string {
   return `
 Wyciągnij dane z faktury i zwróć WYŁĄCZNIE czysty JSON.
+
+BARDZO WAŻNE ZASADY IZOLACJI:
+- analizujesz tylko ten jeden dokument
+- nie używaj żadnych danych z wcześniejszych analiz
+- nie dopisuj nazw towarów, kontrahentów ani pozycji z pamięci
+- jeśli coś jest nieczytelne, ustaw null
+- identyfikator sesji tej analizy: ${sessionScope}
 
 BARDZO WAŻNE:
 - buyer_* = dane Nabywcy
@@ -902,8 +946,8 @@ Struktura:
 }`;
 }
 
-async function extractInvoiceData(file: File, base64: string): Promise<InvoiceData> {
-  const content: InputContent[] = [{ type: "input_text", text: buildExtractionPrompt() }];
+async function extractInvoiceData(file: File, base64: string, sessionScope: string): Promise<InvoiceData> {
+  const content: InputContent[] = [{ type: "input_text", text: buildExtractionPrompt(sessionScope) }];
 
   if (file.type.startsWith("image/")) {
     content.push({
@@ -927,9 +971,14 @@ async function extractInvoiceData(file: File, base64: string): Promise<InvoiceDa
   return parseInvoiceJson(extractOutputText(response));
 }
 
-async function validateWithSecondPass(file: File, base64: string, firstPassData: InvoiceData): Promise<InvoiceData> {
+async function validateWithSecondPass(file: File, base64: string, firstPassData: InvoiceData, sessionScope: string): Promise<InvoiceData> {
   const prompt = `
 Sprawdź i popraw JSON z faktury.
+
+BARDZO WAŻNE ZASADY IZOLACJI:
+- analizujesz wyłącznie bieżący dokument
+- nie używaj danych z wcześniejszych analiz ani innych użytkowników
+- identyfikator sesji tej analizy: ${sessionScope}
 
 Najważniejsze:
 - odróżnij Nabywcę od Odbiorcy
@@ -1031,6 +1080,8 @@ export async function POST(req: Request) {
       typeof manualDataRaw === "string" && manualDataRaw.trim()
         ? (JSON.parse(manualDataRaw) as Record<string, unknown>)
         : {};
+    const manualDataConfirmed = String(formData.get("manualDataConfirmed") || "false") === "true";
+    const reviewToken = String(formData.get("reviewToken") || "").trim();
 
     if (!file) {
       return Response.json({ success: false, message: "Nie wybrano pliku." }, { status: 400 });
@@ -1062,13 +1113,30 @@ export async function POST(req: Request) {
       return Response.json({ success: false, message: "Brak kredytów na koncie.", credits_left: 0 }, { status: 402 });
     }
 
-    const bytes = await file.arrayBuffer();
-    const base64 = Buffer.from(bytes).toString("base64");
+    const bytesArrayBuffer = await file.arrayBuffer();
+    const bytes = Buffer.from(bytesArrayBuffer);
+    const base64 = bytes.toString("base64");
+    const fileHash = buildFileHash(bytes, file.name, file.type);
+    const sessionScope = `${freshUser.id.slice(0, 8)}:${fileHash.slice(0, 12)}`;
+
+    if (manualDataConfirmed && !reviewToken) {
+      return Response.json(
+        { success: false, message: "Brak tokenu zatwierdzonej sesji analizy. Wgraj dokument ponownie." },
+        { status: 409 }
+      );
+    }
+
+    if (manualDataConfirmed && !verifyReviewSession(reviewToken, freshUser.id, fileHash, file.name)) {
+      return Response.json(
+        { success: false, message: "Sesja analizy wygasła albo nie pasuje do bieżącego dokumentu. Wgraj dokument ponownie." },
+        { status: 409 }
+      );
+    }
 
     let data: InvoiceData;
     try {
-      const firstPass = await extractInvoiceData(file, base64);
-      const secondPass = await validateWithSecondPass(file, base64, firstPass);
+      const firstPass = await extractInvoiceData(file, base64, sessionScope);
+      const secondPass = await validateWithSecondPass(file, base64, firstPass, sessionScope);
       data = secondPass;
     } catch (parseError) {
       console.error("Błąd odczytu modelu:", parseError);
@@ -1143,6 +1211,32 @@ export async function POST(req: Request) {
       ...invalidDetails,
     ];
 
+    if (!manualDataConfirmed) {
+      const newReviewToken = createReviewSession(freshUser.id, fileHash, file.name);
+      return Response.json(
+        {
+          success: false,
+          requires_confirmation: true,
+          review_token: newReviewToken,
+          session_scope: sessionScope,
+          message: "Przed wygenerowaniem XML sprawdź i zatwierdź wszystkie dane faktury.",
+          missing_fields: uniqueMissingFields,
+          invalid_fields: invalidFields,
+          extracted_data: data,
+          missing_field_labels: uniqueMissingFields.map((field) => fieldLabels[field] || field),
+          math_problem: itemCheck.math_problem,
+          auto_repaired: itemCheck.repaired,
+          line_issues: itemCheck.line_issues,
+          line_missing_fields: lineMissingFields,
+          totals_mismatch: totalsMismatch,
+          totals_from_items: totalsFromItems,
+          validation_details: validationDetails,
+          credits_left: freshUser.credits,
+        },
+        { status: 409 }
+      );
+    }
+
     if (
       itemCheck.math_problem ||
       lineMissingFields.length > 0 ||
@@ -1154,7 +1248,10 @@ export async function POST(req: Request) {
       return Response.json(
         {
           success: false,
-          message: "Brakują wymagane dane, część pól ma nieprawidłowy format albo co najmniej jedna pozycja wymaga ręcznej korekty.",
+          requires_confirmation: true,
+          review_token: reviewToken,
+          session_scope: sessionScope,
+          message: "Formularz wymaga dalszej korekty. XML nie został jeszcze wygenerowany.",
           missing_fields: uniqueMissingFields,
           invalid_fields: invalidFields,
           extracted_data: data,
@@ -1174,6 +1271,7 @@ export async function POST(req: Request) {
 
     const safeInvoiceNumber = buildSafeFilename(data.invoice_number);
     const xml = buildXml(data);
+    destroyReviewSession(reviewToken);
 
     const [, updatedUser] = await prisma.$transaction([
       prisma.user.update({

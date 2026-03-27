@@ -192,6 +192,7 @@ export default function Home() {
   const [checkingLogin, setCheckingLogin] = useState(true);
 
   const [showInstructions, setShowInstructions] = useState(false);
+  const [showUploadInstructions, setShowUploadInstructions] = useState(false);
   const [showContact, setShowContact] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
   const [acceptedTerms, setAcceptedTerms] = useState(false);
@@ -918,11 +919,19 @@ export default function Home() {
             </button>
 
             <button
+              onClick={() => setShowUploadInstructions(true)}
+              type="button"
+              className="px-4 py-2 rounded border border-emerald-300 text-emerald-700 bg-white hover:bg-emerald-50 transition font-semibold"
+            >
+              Instrukcja
+            </button>
+
+            <button
               onClick={() => setShowInstructions(true)}
               type="button"
               className="px-4 py-2 rounded border border-gray-300 text-gray-800 bg-white hover:bg-gray-50 transition font-semibold"
             >
-              Instrukcja
+              O generatorze
             </button>
 
             <button
@@ -1325,11 +1334,72 @@ export default function Home() {
         </div>
       )}
 
+      {showUploadInstructions && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="w-full max-w-5xl rounded-2xl bg-white shadow-2xl max-h-[92vh] overflow-hidden">
+            <div className="flex items-center justify-between border-b px-6 py-4">
+              <h2 className="text-xl font-bold text-gray-800">Instrukcja użycia generatora XML z faktur</h2>
+              <button
+                type="button"
+                onClick={() => setShowUploadInstructions(false)}
+                className="rounded px-3 py-1 text-sm text-gray-600 hover:bg-gray-100"
+              >
+                Zamknij
+              </button>
+            </div>
+
+            <div className="overflow-y-auto px-6 py-5 space-y-6 max-h-[76vh] text-sm text-gray-700">
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+                <p className="font-semibold text-blue-900 mb-2">Do czego służy generator?</p>
+                <p>
+                  Generator konwertuje faktury zapisane jako PDF lub zdjęcie do pliku XML, który można następnie
+                  wczytać w aplikacji podatnika KSeF. Dzięki temu nie trzeba ręcznie przepisywać wszystkich danych z dokumentu.
+                </p>
+              </div>
+
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900 mb-3">Krok 1. Wejdź do aplikacji podatnika KSeF</h3>
+                <p className="mb-3">
+                  Otwórz stronę <span className="font-semibold">https://ap.ksef.mf.gov.pl/web/</span> i zaloguj się do systemu.
+                  Na ekranie startowym kliknij kafelek logowania do Krajowego Systemu e-Faktur.
+                </p>
+                <img
+                  src="/instrukcja-ksef-1.png"
+                  alt="Instrukcja KSeF - krok 1"
+                  className="w-full rounded-xl border border-gray-200"
+                />
+              </div>
+
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900 mb-3">Krok 2. Przejdź do wczytania faktury</h3>
+                <p className="mb-3">
+                  Po zalogowaniu przejdź do sekcji <span className="font-semibold">Faktury → Wczytaj fakturę</span>,
+                  a następnie kliknij przycisk <span className="font-semibold">Dodaj plik</span>, aby wgrać wygenerowany XML.
+                </p>
+                <img
+                  src="/instrukcja-ksef-2.png"
+                  alt="Instrukcja KSeF - krok 2"
+                  className="w-full rounded-xl border border-gray-200"
+                />
+              </div>
+
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+                <p className="font-semibold text-amber-900 mb-2">Ważne</p>
+                <p>
+                  Przed wczytaniem XML do KSeF zawsze sprawdź dane w formularzu korekty w generatorze,
+                  zwłaszcza kontrahentów, pozycje faktury, kwoty netto/VAT/brutto i terminy płatności.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showInstructions && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
           <div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl max-h-[90vh] overflow-hidden">
             <div className="flex items-center justify-between border-b px-6 py-4">
-              <h2 className="text-xl font-bold text-gray-800">Instrukcja</h2>
+              <h2 className="text-xl font-bold text-gray-800">O generatorze</h2>
               <button
                 type="button"
                 onClick={() => setShowInstructions(false)}
@@ -1341,25 +1411,38 @@ export default function Home() {
 
             <div className="overflow-y-auto px-6 py-5 text-sm text-gray-700 space-y-5">
               <div>
-                <h3 className="font-semibold text-gray-900 mb-2">Co potrafi formularz korekty?</h3>
-                <ul className="list-disc pl-5 space-y-1">
-                  <li>pełna edycja danych sprzedawcy, nabywcy i odbiorcy,</li>
-                  <li>edycja rachunku, dat, płatności, waluty i numeru faktury,</li>
-                  <li>edycja każdej pozycji faktury,</li>
-                  <li>obsługa rabatu procentowego i kwotowego,</li>
-                  <li>kontrola cen netto przed i po rabacie,</li>
-                  <li>pokazanie odczytu źródłowego obok danych edytowanych.</li>
-                </ul>
+                <h3 className="font-semibold text-gray-900 mb-2">Jak działa generator?</h3>
+                <p>
+                  Generator analizuje fakturę w formie PDF lub zdjęcia, odczytuje dane dokumentu i przygotowuje plik XML
+                  zgodny z importem do KSeF. W przypadku nieczytelnych lub nietypowych faktur system otwiera formularz korekty,
+                  w którym można ręcznie sprawdzić i poprawić wszystkie pola.
+                </p>
               </div>
 
               <div>
-                <h3 className="font-semibold text-gray-900 mb-2">Kiedy popup się otwiera?</h3>
-                <ul className="list-disc pl-5 space-y-1">
-                  <li>gdy brakuje danych głównych,</li>
-                  <li>gdy co najmniej jedna pozycja ma niepełne pola,</li>
-                  <li>gdy matematyka pozycji lub sum wymaga korekty,</li>
-                  <li>gdy backend zwraca dokładne przyczyny blokady.</li>
-                </ul>
+                <h3 className="font-semibold text-gray-900 mb-2">Dla kogo jest ten serwis?</h3>
+                <p>
+                  Generator jest przeznaczony dla firm, biur rachunkowych, działów administracyjnych i wszystkich użytkowników,
+                  którzy chcą szybciej przygotować plik XML z faktur kosztowych lub sprzedażowych bez ręcznego przepisywania danych.
+                </p>
+              </div>
+
+              <div>
+                <h3 className="font-semibold text-gray-900 mb-2">Poufność danych</h3>
+                <p>
+                  Wszystkie dane przekazywane do generatora są traktowane jako poufne. Serwis działa z poszanowaniem zasad RODO
+                  oraz polityki prywatności. Użytkownik zachowuje pełną możliwość kontroli i poprawy danych przed wygenerowaniem
+                  końcowego pliku XML.
+                </p>
+              </div>
+
+              <div>
+                <h3 className="font-semibold text-gray-900 mb-2">Odpowiedzialność użytkownika</h3>
+                <p>
+                  Przed użyciem wygenerowanego XML w KSeF należy każdorazowo sprawdzić poprawność kontrahentów, pozycji,
+                  stawek VAT, kwot i terminów. Generator jest narzędziem wspierającym pracę, ale ostateczna weryfikacja dokumentu
+                  pozostaje po stronie użytkownika.
+                </p>
               </div>
             </div>
           </div>

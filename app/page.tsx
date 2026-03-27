@@ -1335,65 +1335,110 @@ export default function Home() {
       )}
 
       {showUploadInstructions && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-          <div className="w-full max-w-5xl rounded-2xl bg-white shadow-2xl max-h-[92vh] overflow-hidden">
-            <div className="flex items-center justify-between border-b px-6 py-4">
-              <h2 className="text-xl font-bold text-gray-800">Instrukcja użycia generatora XML z faktur</h2>
-              <button
-                type="button"
-                onClick={() => setShowUploadInstructions(false)}
-                className="rounded px-3 py-1 text-sm text-gray-600 hover:bg-gray-100"
-              >
-                Zamknij
-              </button>
-            </div>
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+    <div className="w-full max-w-5xl rounded-2xl bg-white shadow-2xl max-h-[92vh] overflow-hidden">
+      <div className="flex items-center justify-between border-b px-6 py-4">
+        <h2 className="text-xl font-bold text-gray-800">
+          Instrukcja użycia generatora XML z faktur
+        </h2>
+        <button
+          type="button"
+          onClick={() => setShowUploadInstructions(false)}
+          className="rounded px-3 py-1 text-sm text-gray-600 hover:bg-gray-100"
+        >
+          Zamknij
+        </button>
+      </div>
 
-            <div className="overflow-y-auto px-6 py-5 space-y-6 max-h-[76vh] text-sm text-gray-700">
-              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
-                <p className="font-semibold text-blue-900 mb-2">Do czego służy generator?</p>
-                <p>
-                  Generator konwertuje faktury zapisane jako PDF lub zdjęcie do pliku XML, który można następnie
-                  wczytać w aplikacji podatnika KSeF. Dzięki temu nie trzeba ręcznie przepisywać wszystkich danych z dokumentu.
-                </p>
-              </div>
+      <div className="overflow-y-auto px-6 py-5 space-y-6 max-h-[76vh] text-sm text-gray-700">
 
-              <div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-3">Krok 1. Wejdź do aplikacji podatnika KSeF</h3>
-                <p className="mb-3">
-                  Otwórz stronę <span className="font-semibold">https://ap.ksef.mf.gov.pl/web/</span> i zaloguj się do systemu.
-                  Na ekranie startowym kliknij kafelek logowania do Krajowego Systemu e-Faktur.
-                </p>
-                <img
-                  src="/instrukcja-ksef-1.png"
-                  alt="Instrukcja KSeF - krok 1"
-                  className="w-full rounded-xl border border-gray-200"
-                />
-              </div>
-
-              <div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-3">Krok 2. Przejdź do wczytania faktury</h3>
-                <p className="mb-3">
-                  Po zalogowaniu przejdź do sekcji <span className="font-semibold">Faktury → Wczytaj fakturę</span>,
-                  a następnie kliknij przycisk <span className="font-semibold">Dodaj plik</span>, aby wgrać wygenerowany XML.
-                </p>
-                <img
-                  src="/instrukcja-ksef-2.png"
-                  alt="Instrukcja KSeF - krok 2"
-                  className="w-full rounded-xl border border-gray-200"
-                />
-              </div>
-
-              <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-                <p className="font-semibold text-amber-900 mb-2">Ważne</p>
-                <p>
-                  Przed wczytaniem XML do KSeF zawsze sprawdź dane w formularzu korekty w generatorze,
-                  zwłaszcza kontrahentów, pozycje faktury, kwoty netto/VAT/brutto i terminy płatności.
-                </p>
-              </div>
-            </div>
-          </div>
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+          <p className="font-semibold text-blue-900 mb-2">
+            Kompletny proces generowania XML z faktury
+          </p>
+          <p>
+            Instrukcja krok po kroku – od logowania aż do wgrania pliku do KSeF.
+          </p>
         </div>
-      )}
+
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">Krok 1. Wpisz e-mail</h3>
+          <p>Wpisz adres e-mail i kliknij <b>Wyślij link logowania</b>.</p>
+        </div>
+
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">Krok 2. Kliknij link</h3>
+          <p>Otwórz mail i kliknij link – uruchomi Twoją sesję.</p>
+        </div>
+
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">Krok 3. Dodaj fakturę</h3>
+          <p>Wybierz PDF lub zdjęcie faktury.</p>
+        </div>
+
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+          <h3 className="text-lg font-semibold text-red-900 mb-2">❗ WAŻNE</h3>
+          <p className="mb-3">
+            Zdjęcie musi być pionowe – poziome powoduje błędy odczytu danych.
+          </p>
+          <img
+            src="/instrukcja-orientacja.png"
+            className="w-full rounded-xl border"
+          />
+        </div>
+
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">Krok 4. Analiza dokumentu</h3>
+          <p>Kliknij <b>Analizuj dokument</b>.</p>
+        </div>
+
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">Krok 5. Sprawdź dane</h3>
+          <p>
+            System otworzy formularz – sprawdź i popraw wszystkie dane:
+            NIP, kwoty, pozycje, daty.
+          </p>
+        </div>
+
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">Krok 6. Generuj XML</h3>
+          <p>Kliknij <b>Akceptuję dane i generuję XML</b>.</p>
+        </div>
+
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">
+            Co dalej po wygenerowaniu XML?
+          </h3>
+          <ul className="list-disc pl-5 space-y-1">
+            <li>plik pobierze się automatycznie,</li>
+            <li>możesz go zapisać lub od razu użyć w KSeF,</li>
+            <li>jeśli pojawił się formularz – oznacza to konieczność kontroli danych.</li>
+          </ul>
+        </div>
+
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-3">Krok 7. KSeF – logowanie</h3>
+          <img src="/instrukcja-ksef-1.png" className="w-full rounded-xl border" />
+        </div>
+
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-3">Krok 8. Wgraj XML</h3>
+          <img src="/instrukcja-ksef-2.png" className="w-full rounded-xl border" />
+        </div>
+
+        <div className="rounded-lg border border-green-200 bg-green-50 p-4">
+          <h3 className="text-lg font-semibold text-green-900 mb-2">
+            Bezpieczeństwo danych
+          </h3>
+          <p>
+            Dane są przetwarzane w ramach Twojej sesji i nie są mieszane z innymi użytkownikami.
+          </p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+)})}
 
       {showInstructions && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">

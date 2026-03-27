@@ -347,7 +347,6 @@ function splitAddress(address: string | null | undefined): { line1: string; line
   const raw = normalizeSpaces(address);
   if (!raw) return { line1: "", line2: "" };
 
-<<<<<<< HEAD
   const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
   if (parts.length >= 2) return { line1: parts[0], line2: parts.slice(1).join(", ") };
 
@@ -355,41 +354,16 @@ function splitAddress(address: string | null | undefined): { line1: string; line
   if (streetFirst) {
     return {
       line1: streetFirst[1].trim(),
-=======
-  const commaParts = raw.split(",").map((p) => p.trim()).filter(Boolean);
-  if (commaParts.length >= 2) {
-    const postalIndex = commaParts.findIndex((p) => /\b\d{2}-\d{3}\b/.test(p));
-    if (postalIndex > 0) {
-      const line1 = commaParts.slice(0, postalIndex).join(", ");
-      const line2 = commaParts.slice(postalIndex).join(", ");
-      return { line1, line2 };
-    }
-    return {
-      line1: commaParts[0],
-      line2: commaParts.slice(1).join(", "),
-    };
-  }
-
-  const streetFirst = raw.match(/^(.*?\b\d+[A-Za-z\/-]*)(?:\s+|,\s*)(\d{2}-\d{3}.*)$/);
-  if (streetFirst) {
-    return {
-      line1: streetFirst[1].trim().replace(/[,\s]+$/, ""),
->>>>>>> b64d6bc76030c3d96b47389aee4cc3c69e5094b9
       line2: streetFirst[2].trim(),
     };
   }
 
-<<<<<<< HEAD
   const postalFirst = raw.match(/^(\d{2}-\d{3}\s+[^,]+)(?:\s+|,\s*)(.+)$/);
-=======
-  const postalFirst = raw.match(/^(\d{2}-\d{3}[^,]*)(?:\s+|,\s*)(.*)$/);
->>>>>>> b64d6bc76030c3d96b47389aee4cc3c69e5094b9
   if (postalFirst) {
     return {
       line1: postalFirst[2].trim(),
       line2: postalFirst[1].trim(),
     };
-<<<<<<< HEAD
   }
 
   const postalMatch = raw.match(/^(.*?)(\d{2}-\d{3}.*)$/);
@@ -402,12 +376,11 @@ function splitAddress(address: string | null | undefined): { line1: string; line
     if (right && /[A-Za-zĄĆĘŁŃÓŚŹŻ]/i.test(right)) {
       return { line1: left || raw, line2: right };
     }
-=======
->>>>>>> b64d6bc76030c3d96b47389aee4cc3c69e5094b9
   }
 
   return { line1: raw, line2: "" };
 }
+
 function tag(name: string, value: string | null | undefined): string {
   if (value == null) return "";
   const str = String(value).trim();
@@ -830,46 +803,6 @@ function buildPodmiot3Xml(data: InvoiceData): string {
   </Podmiot3>`;
 }
 
-
-function hasSeparateRecipient(data: InvoiceData): boolean {
-  const recipientName = normalizeSpaces(data.recipient_name);
-  const recipientAddress = normalizeSpaces(data.recipient_address);
-  const recipientNip = normalizeNip(data.recipient_nip);
-
-  if (!recipientName && !recipientAddress && !recipientNip) return false;
-
-  const buyerName = normalizeSpaces(data.buyer_name);
-  const buyerAddress = normalizeSpaces(data.buyer_address);
-  const buyerNip = normalizeNip(data.buyer_nip);
-
-  const sameName = !!recipientName && !!buyerName && recipientName.toLowerCase() === buyerName.toLowerCase();
-  const sameAddress = !!recipientAddress && !!buyerAddress && recipientAddress.toLowerCase() === buyerAddress.toLowerCase();
-  const sameNip = !!recipientNip && !!buyerNip && recipientNip === buyerNip;
-
-  return !(sameName && sameAddress && (!recipientNip || sameNip));
-}
-
-function buildPodmiot3Xml(data: InvoiceData): string {
-  if (!hasSeparateRecipient(data)) return "";
-
-  const recipientAddress = splitAddress(data.recipient_address);
-  const recipientNip = normalizeNip(data.recipient_nip);
-
-  return `
-  <Podmiot3>
-    <DaneIdentyfikacyjne>
-      ${tag("NIP", recipientNip)}
-      ${tag("Nazwa", data.recipient_name)}
-    </DaneIdentyfikacyjne>
-    <Adres>
-      <KodKraju>PL</KodKraju>
-      ${tag("AdresL1", recipientAddress.line1)}
-      ${tag("AdresL2", recipientAddress.line2)}
-    </Adres>
-    <Rola>2</Rola>
-  </Podmiot3>`;
-}
-
 function buildXml(data: InvoiceData): string {
   const sellerNip = normalizeNip(data.seller_nip);
   const buyerNip = normalizeNip(data.buyer_nip);
@@ -885,7 +818,6 @@ function buildXml(data: InvoiceData): string {
 
   const sellerAddress = splitAddress(data.seller_address);
   const buyerAddress = splitAddress(data.buyer_address);
-  const podmiot3Xml = buildPodmiot3Xml(data);
 
   const paymentXml =
     data.paid === true
@@ -1160,6 +1092,28 @@ function buildValidationDetails(
   return details;
 }
 
+function buildInvalidFieldDetails(data: InvoiceData): { invalidFields: string[]; invalidDetails: string[] } {
+  const invalidFields: string[] = [];
+  const invalidDetails: string[] = [];
+
+  const checks: Array<{ key: "seller_nip" | "buyer_nip" | "recipient_nip"; value: string | null | undefined; label: string }> = [
+    { key: "seller_nip", value: data.seller_nip, label: "NIP sprzedawcy" },
+    { key: "buyer_nip", value: data.buyer_nip, label: "NIP nabywcy" },
+    { key: "recipient_nip", value: data.recipient_nip, label: "NIP odbiorcy" },
+  ];
+
+  for (const check of checks) {
+    const normalized = normalizeNip(check.value);
+    if (!normalized) continue;
+    if (!hasNipFormat(normalized)) {
+      invalidFields.push(check.key);
+      invalidDetails.push(`${check.label} ma nieprawidłowy format: "${normalized}". Prawidłowy NIP powinien mieć dokładnie 10 cyfr.`);
+    }
+  }
+
+  return { invalidFields, invalidDetails };
+}
+
 export async function POST(req: Request) {
   try {
     if (!process.env.OPENAI_API_KEY) {
@@ -1276,9 +1230,7 @@ export async function POST(req: Request) {
       }
     }
 
-    if (data.seller_nip && !hasNipFormat(data.seller_nip)) missingFields.push("seller_nip");
-    if (data.buyer_nip && !hasNipFormat(data.buyer_nip)) missingFields.push("buyer_nip");
-    if (data.recipient_nip && !hasNipFormat(data.recipient_nip)) missingFields.push("recipient_nip");
+    const { invalidFields, invalidDetails } = buildInvalidFieldDetails(data);
 
     const lineMissingFields: LineIssue[] = [];
     data.items.forEach((item, index) => {
@@ -1307,7 +1259,10 @@ export async function POST(req: Request) {
     if (!Number.isNaN(declaredGross) && !Number.isNaN(summedGross) && !nearlyEqual(declaredGross, summedGross, 0.2)) totalsMismatch = true;
 
     const uniqueMissingFields = [...new Set(missingFields)];
-    const validationDetails = buildValidationDetails(data, lineMissingFields, totalsFromItems, totalsMismatch);
+    const validationDetails = [
+      ...buildValidationDetails(data, lineMissingFields, totalsFromItems, totalsMismatch),
+      ...invalidDetails,
+    ];
 
     if (!manualDataConfirmed) {
       const newReviewToken = createReviewSession(freshUser.id, fileHash, file.name);
@@ -1350,13 +1305,8 @@ export async function POST(req: Request) {
           review_token: reviewToken,
           session_scope: sessionScope,
           message: "Formularz wymaga dalszej korekty. XML nie został jeszcze wygenerowany.",
-    if (itemCheck.math_problem || lineMissingFields.length > 0 || totalsMismatch || uniqueMissingFields.length > 0 || validationDetails.length > 0) {
-      return Response.json(
-        {
-          success: false,
-          message: "Brakują wymagane dane lub co najmniej jedna pozycja wymaga ręcznej korekty.",
->>>>>>> b64d6bc76030c3d96b47389aee4cc3c69e5094b9
           missing_fields: uniqueMissingFields,
+          invalid_fields: invalidFields,
           extracted_data: data,
           missing_field_labels: uniqueMissingFields.map((field) => fieldLabels[field] || field),
           math_problem: itemCheck.math_problem,

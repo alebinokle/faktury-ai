@@ -826,7 +826,7 @@ export default function Home() {
                   </button>
                 </div>
 
-                <Hint>Po kliknięciu przycisku wyślemy link logowania na podany adres e-mail.</Hint>
+                <Hint>Po kliknięciu przycisku wyślemy link logowania na podany adres e-mail.(W niektórych przypadkach wiadomość może trafić do folderu spam)</Hint>
 
                 {userMessage && (
                   <div className="rounded border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">

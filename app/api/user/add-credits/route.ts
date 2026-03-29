@@ -1,90 +1,64 @@
-import { prisma } from "../../../../lib/prisma";
+import { PrismaClient } from "@prisma/client";
+import { NextResponse } from "next/server";
+
+const prisma = new PrismaClient();
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-
-    const email = String(body.email || "").trim().toLowerCase();
-    const creditsToAdd = Number(body.credits || 0);
+    const email = body?.email;
 
     if (!email) {
-      return Response.json(
-        { success: false, message: "Brak adresu e-mail." },
+      return NextResponse.json(
+        { success: false, message: "Brak emaila" },
         { status: 400 }
       );
     }
 
-    if (!Number.isFinite(creditsToAdd) || creditsToAdd <= 0) {
-      return Response.json(
-        { success: false, message: "Nieprawidłowa liczba kredytów." },
-        { status: 400 }
-      );
-    }
-
-    let user = await prisma.user.findUnique({
+    const user = await prisma.user.findUnique({
       where: { email },
-      select: {
-        id: true,
-        email: true,
-        credits: true,
-      },
     });
 
     if (!user) {
-      user = await prisma.user.create({
-        data: {
-          email,
-          credits: creditsToAdd,
-        },
-        select: {
-          id: true,
-          email: true,
-          credits: true,
-        },
-      });
+      return NextResponse.json(
+        { success: false, message: "Użytkownik nie istnieje" },
+        { status: 404 }
+      );
+    }
 
-      return Response.json({
+    const MAX = 30;
+    const ADD = 5;
+
+    const current = user.credits ?? 0;
+    const missing = MAX - current;
+
+    if (missing <= 0) {
+      return NextResponse.json({
         success: true,
-        message: `Dodano ${creditsToAdd} kredytów.`,
         user,
+        message: "Masz już maksymalne 30 kredytów",
       });
     }
 
-    const newCredits = (user.credits ?? 0) + creditsToAdd;
+    const toAdd = Math.min(ADD, missing);
 
     const updatedUser = await prisma.user.update({
       where: { email },
       data: {
-        credits: newCredits,
-      },
-      select: {
-        id: true,
-        email: true,
-        credits: true,
+        credits: current + toAdd,
       },
     });
 
-    console.log("ADD CREDITS:", {
-      email,
-      before: user.credits,
-      add: creditsToAdd,
-      after: updatedUser.credits,
-    });
-
-    return Response.json({
+    return NextResponse.json({
       success: true,
-      message: `Dodano ${creditsToAdd} kredytów.`,
       user: updatedUser,
     });
-  } catch (error) {
-    console.error("ADD CREDITS ERROR:", error);
 
-    return Response.json(
-      {
-        success: false,
-        message: "Nie udało się dodać kredytów.",
-        error: String(error),
-      },
+  } catch (err) {
+    console.error(err);
+
+    return NextResponse.json(
+      { success: false, message: "Błąd serwera" },
       { status: 500 }
     );
   }

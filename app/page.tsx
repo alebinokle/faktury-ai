@@ -178,6 +178,7 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [result, setResult] = useState("");
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [missingFields, setMissingFields] = useState<string[]>([]);
   const [invalidFields, setInvalidFields] = useState<string[]>([]);
   const [status, setStatus] = useState<"idle" | "success" | "error" | "info">("idle");
@@ -384,7 +385,7 @@ export default function Home() {
       errors.push("Brakuje tokenu sesji analizy. Wgraj dokument ponownie.");
     }
 
-    if ((manualData.paid || "").toLowerCase() === "true" && !(manualData.payment_date || "").trim()) {
+    if ((manualData.paid || "").toLowerCase() === "Tak" && !(manualData.payment_date || "").trim()) {
       errors.push("Zaznaczono fakturę jako opłaconą, ale brakuje daty zapłaty.");
     }
 
@@ -546,10 +547,19 @@ export default function Home() {
     }
   };
 
-  const handleAddCredits = async (creditsToAdd = 30) => {
+  const handleAddCredits = async () => {
     try {
       setUserMessage("");
       if (!userEmail) return setUserMessage("Brak adresu e-mail.");
+
+      const currentCredits = credits ?? 0;
+      const missingToMax = 30 - currentCredits;
+
+      if (missingToMax <= 0) {
+        return setUserMessage("Masz już maksymalne 30 kredytów.");
+      }
+
+      const creditsToAdd = Math.min(5, missingToMax);
 
       const res = await fetch("/api/user/add-credits", {
         method: "POST",
@@ -587,6 +597,36 @@ export default function Home() {
     }
   };
 
+
+  const startProgressSimulation = () => {
+    setProgress(7);
+    let value = 7;
+    const timer = window.setInterval(() => {
+      value = Math.min(value + Math.random() * 12, 92);
+      setProgress(value);
+    }, 350);
+    return timer;
+  };
+
+  const finishProgressSimulation = (timer?: number) => {
+    if (timer) window.clearInterval(timer);
+    setProgress(100);
+    window.setTimeout(() => {
+      setProgress(0);
+    }, 500);
+  };
+
+  const progressLabel =
+    progress < 20
+      ? "Przygotowywanie pliku..."
+      : progress < 45
+        ? "Analiza dokumentu..."
+        : progress < 75
+          ? "Sprawdzanie danych..."
+          : progress < 95
+            ? "Przygotowywanie wyniku..."
+            : "Finalizacja...";
+
   const handleUpload = async () => {
     if (!acceptedTerms) return setMessage("Wysyłka pliku wymaga akceptacji regulaminu i polityki prywatności.");
     if (!loggedIn) return setMessage("Aby kontynuować, zaloguj się.");
@@ -594,6 +634,7 @@ export default function Home() {
 
     try {
       setLoading(true);
+      const progressTimer = startProgressSimulation();
       setStatus("info");
       setMessage("Trwa analiza dokumentu. XML zostanie wygenerowany dopiero po zatwierdzeniu formularza.");
       setResult("");
@@ -612,14 +653,19 @@ export default function Home() {
 
       const res = await fetch("/api/process", { method: "POST", body: formData });
 
-      if (!res.ok) return await handleProcessResponseError(res);
+      if (!res.ok) {
+        finishProgressSimulation(progressTimer);
+        return await handleProcessResponseError(res);
+      }
 
+      finishProgressSimulation(progressTimer);
       setStatus("error");
       setMessage("Nieoczekiwana odpowiedź serwera. XML nie powinien być generowany bez akceptacji formularza.");
     } catch (error) {
       console.error(error);
       setStatus("error");
       setMessage("Wystąpił błąd podczas wysyłania pliku.");
+      setProgress(0);
     } finally {
       setLoading(false);
     }
@@ -641,6 +687,7 @@ export default function Home() {
 
     try {
       setLoading(true);
+      const progressTimer = startProgressSimulation();
       setStatus("info");
       setMessage("Trwa generowanie XML...");
 
@@ -655,6 +702,7 @@ export default function Home() {
       const creditsLeftHeader = res.headers.get("x-credits-left");
 
       if (!res.ok) {
+        finishProgressSimulation(progressTimer);
         setShowFixModal(true);
         return await handleProcessResponseError(res);
       }
@@ -669,6 +717,7 @@ export default function Home() {
         if (!Number.isNaN(parsedCredits)) setCredits(parsedCredits);
       }
 
+      finishProgressSimulation(progressTimer);
       setGeneratedXml(text);
       setGeneratedFilename(filename);
       setResult(text);
@@ -685,6 +734,7 @@ export default function Home() {
       setStatus("error");
       setMessage("Wystąpił błąd podczas generowania XML.");
       setShowFixModal(true);
+      setProgress(0);
     } finally {
       setLoading(false);
     }
@@ -743,9 +793,7 @@ export default function Home() {
         <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-xl mb-6">
           <h1 className="text-2xl font-bold mb-2 text-gray-800">Generowanie XML do KSeF</h1>
           <p className="text-gray-500 mb-6">
-            Prześlij fakturę w PDF lub jako zdjęcie. System odczyta dokument, spróbuje naprawić typowe
-            niejasności, a przy trudniejszych fakturach otworzy pełny formularz kontroli wszystkich danych
-            i pozycji.
+            Prześlij fakturę w PDF lub jako zdjęcie. System odczyta dokument, a przy trudniejszych fakturach otworzy pełny formularz kontroli wszystkich danych i pozycji.
           </p>
 
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 mb-4">
@@ -810,7 +858,7 @@ export default function Home() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleAddCredits(30)}
+                      onClick={handleAddCredits}
                       className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
                     >
                       Zasil konto
@@ -942,6 +990,21 @@ export default function Home() {
               Kontakt
             </button>
           </div>
+
+          {loading && (
+            <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+              <div className="mb-2 flex items-center justify-between text-sm text-blue-900">
+                <span>{progressLabel}</span>
+                <span>{Math.round(progress)}%</span>
+              </div>
+              <div className="h-3 w-full overflow-hidden rounded-full bg-white/90 border border-blue-100">
+                <div
+                  className="h-3 rounded-full bg-blue-600 transition-all duration-300"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            </div>
+          )}
         </div>
 
         {(message || missingFields.length > 0 || lineMissingFields.length > 0 || lineIssues.length > 0 || validationDetails.length > 0 || canReopenFixModal) && (
@@ -1313,7 +1376,22 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="border-t px-6 py-4 flex flex-wrap gap-3">
+            <div className="border-t px-6 py-4">
+              {loading && (
+                <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+                  <div className="mb-2 flex items-center justify-between text-sm text-blue-900">
+                    <span>{progressLabel}</span>
+                    <span>{Math.round(progress)}%</span>
+                  </div>
+                  <div className="h-3 w-full overflow-hidden rounded-full bg-white/90 border border-blue-100">
+                    <div
+                      className="h-3 rounded-full bg-blue-600 transition-all duration-300"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+              <div className="flex flex-wrap gap-3">
               <button
                 type="button"
                 onClick={handleGenerateFromManualData}
@@ -1329,6 +1407,7 @@ export default function Home() {
               >
                 Zamknij
               </button>
+              </div>
             </div>
           </div>
         </div>

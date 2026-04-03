@@ -890,33 +890,36 @@ export default function Home() {
         <div className="text-sm opacity-90">Konwerter faktur do XML</div>
       </div>
 
-      <div className="flex flex-col items-center py-16 px-4">
-        <div className="w-full max-w-4xl mb-6">
-          <div className="rounded-2xl border border-red-200 bg-gradient-to-r from-red-50 via-white to-red-50 p-6 shadow-md text-center">
-            <div className="inline-block bg-red-600 text-white px-4 py-1 rounded-full text-sm font-semibold mb-3">
-              🚧 WERSJA BETA
+      <div className="flex flex-col items-center py-5 px-4">
+  <div className="w-full max-w-xl mb-4">
+    <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm text-center">
+
+      <div className="inline-block bg-red-500 text-white px-2 py-0.5 rounded-full text-[10px] font-medium mb-2">
+        WERSJA BETA
+      </div>
+
+      <p className="text-sm font-medium text-gray-800 mb-3">
+        Pełna funkcjonalność za:
+      </p>
+
+      <div className="flex justify-center gap-2">
+        {[
+          { v: days, l: "dni" },
+          { v: hours, l: "godz" },
+          { v: minutes, l: "min" },
+          { v: seconds, l: "sek" },
+        ].map((t, i) => (
+          <div key={i} className="text-center">
+            <div className="bg-gray-900 text-white text-sm font-semibold px-2 py-1 rounded-md min-w-[38px]">
+              {t.v}
             </div>
+            <div className="text-[10px] text-gray-500 mt-1">{t.l}</div>
+          </div>
+        ))}
+      </div>
 
-            <h2 className="text-2xl font-bold text-gray-900">
-              Pełna funkcjonalność za:
-            </h2>
-
-            <div className="flex justify-center gap-3 mt-4 flex-wrap">
-              {[
-                { v: days, l: "dni" },
-                { v: hours, l: "godz" },
-                { v: minutes, l: "min" },
-                { v: seconds, l: "sek" },
-              ].map((t, i) => (
-                <div key={i} className="bg-black text-white px-5 py-3 rounded-xl shadow">
-                  <div className="text-3xl font-bold">{t.v}</div>
-                  <div className="text-xs text-gray-300">{t.l}</div>
-                </div>
-              ))}
-            </div>
-
-            <p className="text-sm text-gray-600 mt-4">
-              System działa, ale finalne poprawki są w trakcie. Dziękujemy za cierpliwość.
+      <p className="text-[11px] text-gray-500 mt-3">
+        System działa — kończymy ostatnie poprawki.
             </p>
           </div>
         </div>

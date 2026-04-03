@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import { randomBytes } from "crypto";
 import { Resend } from "resend";
+import { verifyTurnstileToken } from "@/lib/verifyTurnstile";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -25,6 +26,9 @@ export async function POST(req: Request) {
     const email =
       typeof emailRaw === "string" ? emailRaw.trim().toLowerCase() : "";
 
+    const turnstileToken =
+      typeof body?.turnstileToken === "string" ? body.turnstileToken : "";
+
     if (!email) {
       return Response.json(
         { success: false, message: "Podaj adres e-mail." },
@@ -35,6 +39,30 @@ export async function POST(req: Request) {
     if (!isValidEmail(email)) {
       return Response.json(
         { success: false, message: "Nieprawidłowy adres e-mail." },
+        { status: 400 }
+      );
+    }
+
+    if (!turnstileToken) {
+      return Response.json(
+        { success: false, message: "Potwierdź CAPTCHA przed wysłaniem linku logowania." },
+        { status: 400 }
+      );
+    }
+
+    const ip =
+      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      req.headers.get("cf-connecting-ip") ||
+      null;
+
+    const captcha = await verifyTurnstileToken({
+      token: turnstileToken,
+      ip,
+    });
+
+    if (!captcha.success) {
+      return Response.json(
+        { success: false, message: "Nie udało się potwierdzić CAPTCHA." },
         { status: 400 }
       );
     }
@@ -68,7 +96,7 @@ export async function POST(req: Request) {
       data: {
         email,
         token,
-        expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 min
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
       },
     });
 

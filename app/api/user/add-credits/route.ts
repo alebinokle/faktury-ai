@@ -1,16 +1,30 @@
 import { PrismaClient } from "@prisma/client";
-import { NextResponse } from "next/server";
+import { verifyTurnstileToken } from "@/lib/verifyTurnstile";
 
 const prisma = new PrismaClient();
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const email = body?.email;
+    const email = String(body.email || "").trim().toLowerCase();
+    const turnstileToken = String(body.turnstileToken || "");
 
     if (!email) {
-      return NextResponse.json(
-        { success: false, message: "Brak emaila" },
+      return Response.json(
+        { success: false, message: "Brak adresu e-mail." },
+        { status: 400 }
+      );
+    }
+
+    const ip =
+      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      req.headers.get("cf-connecting-ip") ||
+      null;
+
+    const captcha = await verifyTurnstileToken({ token: turnstileToken, ip });
+    if (!captcha.success) {
+      return Response.json(
+        { success: false, message: "Nie udało się potwierdzić CAPTCHA." },
         { status: 400 }
       );
     }
@@ -20,45 +34,42 @@ export async function POST(req: Request) {
     });
 
     if (!user) {
-      return NextResponse.json(
-        { success: false, message: "Użytkownik nie istnieje" },
+      return Response.json(
+        { success: false, message: "Nie znaleziono użytkownika." },
         { status: 404 }
       );
     }
 
-    const MAX = 30;
-    const ADD = 5;
-
-    const current = user.credits ?? 0;
-    const missing = MAX - current;
-
-    if (missing <= 0) {
-      return NextResponse.json({
-        success: true,
-        user,
-        message: "Masz już maksymalne 30 kredytów",
-      });
+    if (!("trialCreditsUsed" in user) || (user as any).trialCreditsUsed) {
+      return Response.json(
+        { success: false, message: "Kredyty testowe zostały już wykorzystane." },
+        { status: 400 }
+      );
     }
-
-    const toAdd = Math.min(ADD, missing);
 
     const updatedUser = await prisma.user.update({
       where: { email },
       data: {
-        credits: current + toAdd,
+        credits: {
+          increment: 3,
+        },
+        trialCreditsUsed: true,
+      } as any,
+    });
+
+    return Response.json({
+      success: true,
+      message: `Dodano 3 kredyty. Aktualne saldo: ${updatedUser.credits}`,
+      user: {
+        id: updatedUser.id,
+        email: updatedUser.email,
+        credits: updatedUser.credits,
       },
     });
-
-    return NextResponse.json({
-      success: true,
-      user: updatedUser,
-    });
-
-  } catch (err) {
-    console.error(err);
-
-    return NextResponse.json(
-      { success: false, message: "Błąd serwera" },
+  } catch (error) {
+    console.error("add-credits error:", error);
+    return Response.json(
+      { success: false, message: "Wystąpił błąd podczas dodawania kredytów." },
       { status: 500 }
     );
   }

@@ -45,7 +45,8 @@ export async function GET(req: Request) {
       user = await prisma.user.create({
         data: {
           email: loginToken.email,
-          credits: 30,
+          trialCreditsUsed: false,
+          credits: 0,
         },
       });
     }

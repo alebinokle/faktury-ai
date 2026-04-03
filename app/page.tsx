@@ -1,6 +1,30 @@
 "use client";
 
+import Script from "next/script";
 import { useEffect, useMemo, useState } from "react";
+
+const TARGET_DATE = new Date("2026-04-08T23:59:59").getTime();
+
+function useCountdown() {
+  const [timeLeft, setTimeLeft] = useState(TARGET_DATE - Date.now());
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTimeLeft(TARGET_DATE - Date.now());
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const totalSeconds = Math.max(0, Math.floor(timeLeft / 1000));
+
+  const days = String(Math.floor(totalSeconds / 86400)).padStart(2, "0");
+  const hours = String(Math.floor((totalSeconds % 86400) / 3600)).padStart(2, "0");
+  const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, "0");
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+
+  return { days, hours, minutes, seconds };
+}
 
 type ApiErrorResponse = {
   success?: boolean;
@@ -52,6 +76,7 @@ type MeResponse = {
     id: string;
     email: string;
     credits: number;
+    trialCreditsUsed?: boolean;
   };
 };
 
@@ -62,8 +87,21 @@ type CreditsApiResponse = {
     id: string;
     email: string;
     credits: number;
+    trialCreditsUsed?: boolean;
   };
 };
+
+declare global {
+  interface Window {
+    turnstile?: {
+      reset?: (selector?: string | HTMLElement) => void;
+    };
+    onLoginTurnstileSuccess?: (token: string) => void;
+    onLoginTurnstileExpired?: () => void;
+    onBonusTurnstileSuccess?: (token: string) => void;
+    onBonusTurnstileExpired?: () => void;
+  }
+}
 
 const mainFieldLabels: Record<string, string> = {
   seller_nip: "NIP sprzedawcy",
@@ -174,6 +212,7 @@ function Hint({ children }: { children: React.ReactNode }) {
 }
 
 export default function Home() {
+  const { days, hours, minutes, seconds } = useCountdown();
   const [file, setFile] = useState<File | null>(null);
   const [message, setMessage] = useState("");
   const [result, setResult] = useState("");
@@ -187,8 +226,11 @@ export default function Home() {
 
   const [email, setEmail] = useState("");
   const [credits, setCredits] = useState<number | null>(null);
+  const [trialCreditsUsed, setTrialCreditsUsed] = useState(false);
   const [userEmail, setUserEmail] = useState("");
   const [userMessage, setUserMessage] = useState("");
+  const [loginCaptchaToken, setLoginCaptchaToken] = useState("");
+  const [bonusCaptchaToken, setBonusCaptchaToken] = useState("");
   const [loggedIn, setLoggedIn] = useState(false);
   const [checkingLogin, setCheckingLogin] = useState(true);
 
@@ -229,10 +271,15 @@ export default function Home() {
     return `mailto:${to}?subject=${subject}&body=${body}`;
   }, [contactSubject, contactBody]);
 
-  const updateLoggedInUser = (user: { email: string; credits: number }) => {
+  const updateLoggedInUser = (user: {
+    email: string;
+    credits: number;
+    trialCreditsUsed?: boolean;
+  }) => {
     setLoggedIn(true);
     setUserEmail(user.email);
     setCredits(user.credits);
+    setTrialCreditsUsed(Boolean(user.trialCreditsUsed));
   };
 
   useEffect(() => {
@@ -241,12 +288,17 @@ export default function Home() {
         const res = await fetch("/api/auth/me", { cache: "no-store" });
         const data: MeResponse = await res.json();
         if (data?.loggedIn && data.user) {
-          updateLoggedInUser({ email: data.user.email, credits: data.user.credits });
+          updateLoggedInUser({
+            email: data.user.email,
+            credits: data.user.credits,
+            trialCreditsUsed: data.user.trialCreditsUsed,
+          });
           setUserMessage(`Zalogowano: ${data.user.email}`);
         } else {
           setLoggedIn(false);
           setUserEmail("");
           setCredits(null);
+          setTrialCreditsUsed(false);
         }
       } catch (error) {
         console.error(error);
@@ -255,6 +307,20 @@ export default function Home() {
       }
     };
     loadMe();
+  }, []);
+
+  useEffect(() => {
+    window.onLoginTurnstileSuccess = (token: string) => setLoginCaptchaToken(token);
+    window.onLoginTurnstileExpired = () => setLoginCaptchaToken("");
+    window.onBonusTurnstileSuccess = (token: string) => setBonusCaptchaToken(token);
+    window.onBonusTurnstileExpired = () => setBonusCaptchaToken("");
+
+    return () => {
+      window.onLoginTurnstileSuccess = undefined;
+      window.onLoginTurnstileExpired = undefined;
+      window.onBonusTurnstileSuccess = undefined;
+      window.onBonusTurnstileExpired = undefined;
+    };
   }, []);
 
   const downloadXml = () => {
@@ -484,11 +550,14 @@ export default function Home() {
       setUserMessage("");
       const trimmedEmail = email.trim().toLowerCase();
       if (!trimmedEmail) return setUserMessage("Wpisz adres e-mail.");
+      if (!loginCaptchaToken) {
+        return setUserMessage("Potwierdź CAPTCHA przed wysłaniem linku logowania.");
+      }
 
       const res = await fetch("/api/auth/send-link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: trimmedEmail }),
+        body: JSON.stringify({ email: trimmedEmail, turnstileToken: loginCaptchaToken }),
       });
 
       const data = await res.json();
@@ -497,6 +566,8 @@ export default function Home() {
       }
 
       setUserMessage("Link logowania został wysłany.");
+      setLoginCaptchaToken("");
+      window.turnstile?.reset?.(".turnstile-login");
     } catch (error) {
       console.error(error);
       setUserMessage("Wystąpił błąd podczas wysyłania linku logowania.");
@@ -509,12 +580,17 @@ export default function Home() {
       const res = await fetch("/api/auth/me", { cache: "no-store" });
       const data: MeResponse = await res.json();
       if (data?.loggedIn && data.user) {
-        updateLoggedInUser({ email: data.user.email, credits: data.user.credits });
+        updateLoggedInUser({
+          email: data.user.email,
+          credits: data.user.credits,
+          trialCreditsUsed: data.user.trialCreditsUsed,
+        });
         setUserMessage(`Zalogowano: ${data.user.email}`);
       } else {
         setLoggedIn(false);
         setUserEmail("");
         setCredits(null);
+        setTrialCreditsUsed(false);
         setUserMessage("Sesja nie jest aktywna.");
       }
     } catch (error) {
@@ -540,6 +616,7 @@ export default function Home() {
       }
 
       setCredits(data.user.credits);
+      setTrialCreditsUsed(Boolean(data.user.trialCreditsUsed));
       setUserMessage(`Aktualne saldo: ${data.user.credits}`);
     } catch (error) {
       console.error(error);
@@ -551,32 +628,52 @@ export default function Home() {
     try {
       setUserMessage("");
       if (!userEmail) return setUserMessage("Brak adresu e-mail.");
-
-      const currentCredits = credits ?? 0;
-      const missingToMax = 30 - currentCredits;
-
-      if (missingToMax <= 0) {
-        return setUserMessage("Masz już maksymalne 30 kredytów.");
+      if (!bonusCaptchaToken) {
+        return setUserMessage("Potwierdź CAPTCHA przed dodaniem testowych kredytów.");
       }
-
-      const creditsToAdd = Math.min(5, missingToMax);
 
       const res = await fetch("/api/user/add-credits", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: userEmail, credits: creditsToAdd }),
+        body: JSON.stringify({ email: userEmail, turnstileToken: bonusCaptchaToken }),
       });
 
       const data: CreditsApiResponse = await res.json();
       if (!res.ok || !data?.success || !data.user) {
-        return setUserMessage(data?.message || "Nie udało się zasilić konta.");
+        return setUserMessage(data?.message || "Nie udało się dodać kredytów.");
       }
 
       setCredits(data.user.credits);
-      setUserMessage(`Dodano ${creditsToAdd} kredytów. Aktualne saldo: ${data.user.credits}`);
+      setTrialCreditsUsed(Boolean(data.user.trialCreditsUsed));
+      setUserMessage(`Dodano 3 kredyty. Aktualne saldo: ${data.user.credits}`);
+      setBonusCaptchaToken("");
+      window.turnstile?.reset?.(".turnstile-bonus");
     } catch (error) {
       console.error(error);
-      setUserMessage("Wystąpił błąd podczas zasilania konta.");
+      setUserMessage("Wystąpił błąd podczas dodawania kredytów.");
+    }
+  };
+
+  const handleBuyCredits = async (packageCode: "basic" | "pro" | "max") => {
+    try {
+      setUserMessage("");
+      if (!userEmail) return setUserMessage("Brak adresu e-mail.");
+
+      const res = await fetch("/api/p24/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: userEmail, packageCode }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data?.ok || !data?.redirectUrl) {
+        return setUserMessage(data?.error || "Nie udało się rozpocząć płatności.");
+      }
+
+      window.location.href = data.redirectUrl;
+    } catch (error) {
+      console.error(error);
+      setUserMessage("Wystąpił błąd podczas uruchamiania płatności.");
     }
   };
 
@@ -589,7 +686,10 @@ export default function Home() {
       setLoggedIn(false);
       setUserEmail("");
       setCredits(null);
+      setTrialCreditsUsed(false);
       setEmail("");
+      setLoginCaptchaToken("");
+      setBonusCaptchaToken("");
       setUserMessage("Wylogowano.");
     } catch (error) {
       console.error(error);
@@ -784,12 +884,42 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gray-100">
+      <Script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer />
       <div className="bg-red-600 text-white py-4 px-6 flex items-center justify-between shadow">
         <div className="font-bold text-lg">KSeF</div>
         <div className="text-sm opacity-90">Konwerter faktur do XML</div>
       </div>
 
       <div className="flex flex-col items-center py-16 px-4">
+        <div className="w-full max-w-4xl mb-6">
+          <div className="rounded-2xl border border-red-200 bg-gradient-to-r from-red-50 via-white to-red-50 p-6 shadow-md text-center">
+            <div className="inline-block bg-red-600 text-white px-4 py-1 rounded-full text-sm font-semibold mb-3">
+              🚧 WERSJA BETA
+            </div>
+
+            <h2 className="text-2xl font-bold text-gray-900">
+              Pełna funkcjonalność za:
+            </h2>
+
+            <div className="flex justify-center gap-3 mt-4 flex-wrap">
+              {[
+                { v: days, l: "dni" },
+                { v: hours, l: "godz" },
+                { v: minutes, l: "min" },
+                { v: seconds, l: "sek" },
+              ].map((t, i) => (
+                <div key={i} className="bg-black text-white px-5 py-3 rounded-xl shadow">
+                  <div className="text-3xl font-bold">{t.v}</div>
+                  <div className="text-xs text-gray-300">{t.l}</div>
+                </div>
+              ))}
+            </div>
+
+            <p className="text-sm text-gray-600 mt-4">
+              System działa, ale finalne poprawki są w trakcie. Dziękujemy za cierpliwość.
+            </p>
+          </div>
+        </div>
         <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-xl mb-6">
           <h1 className="text-2xl font-bold mb-2 text-gray-800">Generowanie XML do KSeF</h1>
           <p className="text-gray-500 mb-6">
@@ -826,7 +956,18 @@ export default function Home() {
                   </button>
                 </div>
 
-                <Hint>Po kliknięciu przycisku wyślemy link logowania na podany adres e-mail.(W niektórych przypadkach wiadomość może trafić do folderu spam)</Hint>
+                <div
+                  className="cf-turnstile turnstile-login"
+                  data-sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || ""}
+                  data-callback="onLoginTurnstileSuccess"
+                  data-expired-callback="onLoginTurnstileExpired"
+                  data-error-callback="onLoginTurnstileExpired"
+                />
+
+                <Hint>
+                  Po kliknięciu przycisku wyślemy link logowania na podany adres e-mail. W niektórych
+                  przypadkach wiadomość może trafić do folderu spam.
+                </Hint>
 
                 {userMessage && (
                   <div className="rounded border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
@@ -847,8 +988,12 @@ export default function Home() {
                 )}
 
                 <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
-                  <div className="text-sm font-semibold text-blue-900 mb-2">Kredyty</div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="text-sm font-semibold text-blue-900 mb-1">Kredyty</div>
+                  <div className="text-xs text-blue-800 mb-3">
+                    1 kredyt = wygenerowanie 1 pliku XML z 1 faktury
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <button
                       type="button"
                       onClick={handleRefreshCredits}
@@ -856,14 +1001,60 @@ export default function Home() {
                     >
                       Odśwież saldo
                     </button>
+
+                    {!trialCreditsUsed ? (
+                      <button
+                        type="button"
+                        onClick={handleAddCredits}
+                        className="rounded border border-amber-400 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-800 hover:bg-amber-100"
+                      >
+                        Dodaj testowo 3 kredyty
+                      </button>
+                    ) : (
+                      <div className="rounded border border-gray-200 bg-white px-4 py-2 text-sm text-gray-500">
+                        Kredyty testowe zostały już wykorzystane
+                      </div>
+                    )}
+
                     <button
                       type="button"
-                      onClick={handleAddCredits}
+                      onClick={() => handleBuyCredits("basic")}
                       className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
                     >
-                      Zasil konto
+                      Kup 100 kredytów — 19 zł
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleBuyCredits("pro")}
+                      className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+                    >
+                      Kup 400 kredytów — 49 zł
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleBuyCredits("max")}
+                      className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 sm:col-span-2"
+                    >
+                      Kup 1000 kredytów — 99 zł
                     </button>
                   </div>
+
+                  {!trialCreditsUsed && (
+                    <>
+                      <div
+                        className="cf-turnstile turnstile-bonus mt-3"
+                        data-sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || ""}
+                        data-callback="onBonusTurnstileSuccess"
+                        data-expired-callback="onBonusTurnstileExpired"
+                        data-error-callback="onBonusTurnstileExpired"
+                      />
+                      <div className="mt-2 text-xs text-gray-500">
+                        Zabezpieczenie antyspamowe dla jednorazowego testowego zasilenia konta.
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 <div className="flex flex-wrap gap-2">
@@ -938,22 +1129,13 @@ export default function Home() {
             <p className="text-xs text-gray-500 mt-2">
               Bez akceptacji regulaminu nie można przesłać pliku do przetworzenia.
             </p>
-
-            <div className="mt-3">
-              <a
-                href="/polityka-prywatnosci"
-                className="text-sm text-blue-700 underline hover:text-blue-900"
-              >
-                Polityka prywatności
-              </a>
-            </div>
           </div>
 
-          <div className="flex flex-wrap gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <button
               onClick={handleUpload}
               disabled={loading || !acceptedTerms || !loggedIn}
-              className="flex-1 min-w-[180px] bg-blue-900 text-white py-2 rounded hover:bg-blue-800 transition font-semibold disabled:opacity-70 disabled:cursor-not-allowed"
+              className="col-span-2 sm:col-span-3 bg-blue-900 text-white py-2 rounded hover:bg-blue-800 transition font-semibold disabled:opacity-70 disabled:cursor-not-allowed"
             >
               {loading ? "Analiza..." : "Analizuj dokument"}
             </button>
@@ -980,6 +1162,16 @@ export default function Home() {
               className="px-4 py-2 rounded border border-gray-300 text-gray-800 bg-white hover:bg-gray-50 transition font-semibold"
             >
               O generatorze
+            </button>
+
+            <button
+              onClick={() => {
+                window.location.href = "/polityka-prywatnosci";
+              }}
+              type="button"
+              className="col-span-2 sm:col-span-2 px-4 py-2 rounded border border-indigo-300 text-indigo-700 bg-white hover:bg-indigo-50 transition font-semibold"
+            >
+              Regulamin i polityka prywatności
             </button>
 
             <button

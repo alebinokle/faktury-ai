@@ -8,46 +8,16 @@ datasource db {
 }
 
 model User {
-  id          String        @id @default(cuid())
-  email       String        @unique
-  credits     Int           @default(0)
-  createdAt   DateTime      @default(now())
+  id               String        @id @default(cuid())
+  email            String        @unique
+  credits          Int           @default(0)
+  trialCreditsUsed Boolean       @default(false)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
 
-  payments    Payment[]
-  creditUsage CreditUsage[]
-  sessions    Session[]
-}
-
-model Payment {
-  id              String   @id @default(cuid())
-  userId          String
-  stripeSessionId String   @unique
-  packageCode     String
-  amount          Int
-  creditsAdded    Int
-  status          String
-  createdAt       DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model CreditUsage {
-  id          String   @id @default(cuid())
-  userId      String
-  creditsUsed Int      @default(1)
-  invoiceName String?
-  createdAt   DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model LoginToken {
-  id        String   @id @default(cuid())
-  email     String
-  token     String   @unique
-  expiresAt DateTime
-  used      Boolean  @default(false)
-  createdAt DateTime @default(now())
+  sessions         Session[]
+  payments         Payment[]
+  creditUsages     CreditUsage[]
 }
 
 model Session {
@@ -57,5 +27,38 @@ model Session {
   expiresAt DateTime
   createdAt DateTime @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Payment {
+  id           String   @id @default(cuid())
+  userId       String
+  p24SessionId String   @unique
+  orderId      Int?
+  packageCode  String
+  amount       Int
+  creditsAdded Int
+  status       String
+  createdAt    DateTime @default(now())
+
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CreditUsage {
+  id        String   @id @default(cuid())
+  userId    String
+  amount    Int
+  reason    String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model LoginToken {
+  id        String   @id @default(cuid())
+  email     String
+  token     String   @unique
+  used      Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
 }

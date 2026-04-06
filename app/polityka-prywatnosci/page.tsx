@@ -24,7 +24,7 @@ export default function PolitykaPrywatnosciPage() {
           <div>ul. Motylewska 24</div>
           <div>64-920 Piła</div>
           <div>NIP: 7640101529</div>
-          <div>Email: ksefxml@outlook.com</div>
+          <div>Email: kontakt@kesfxml.pl</div>
         </div>
 
         <div className="space-y-6 text-sm leading-6 text-gray-700">
@@ -137,7 +137,7 @@ export default function PolitykaPrywatnosciPage() {
             <h2 className="mb-2 text-lg font-semibold text-gray-900">11. Reklamacje</h2>
             <p>
               Reklamacje można zgłaszać drogą mailową na adres:
-              <span className="font-semibold"> ksefxml@outlook.com</span>.
+              <span className="font-semibold"> kontakt@ksefxml.pl</span>.
             </p>
             <p className="mt-2">
               Reklamacja powinna zawierać adres e-mail użytkownika, opis problemu oraz datę zdarzenia.
@@ -170,7 +170,7 @@ export default function PolitykaPrywatnosciPage() {
             <h2 className="mb-2 text-lg font-semibold text-gray-900">14. Kontakt</h2>
             <p>
               W sprawach dotyczących serwisu, regulaminu lub prywatności można
-              kontaktować się pod adresem: <span className="font-semibold">ksefxml@outlook.com</span>
+              kontaktować się pod adresem: <span className="font-semibold">kontakt@ksefxml.pl</span>
             </p>
           </section>
 

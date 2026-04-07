@@ -265,7 +265,7 @@ export default function Home() {
   const [contactBody, setContactBody] = useState("");
 
   const mailtoHref = useMemo(() => {
-    const to = "ksefxml@outlook.com";
+    const to = "kontakt@ksefxml.pl";
     const subject = encodeURIComponent(contactSubject || "Pomoc techniczna – ksefxml.pl");
     const body = encodeURIComponent(contactBody || "");
     return `mailto:${to}?subject=${subject}&body=${body}`;
@@ -677,25 +677,27 @@ export default function Home() {
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      const res = await fetch("/api/auth/logout", { method: "POST" });
-      const data = await res.json();
-      if (!res.ok || !data?.success) return setUserMessage(data?.message || "Nie udało się wylogować.");
+const handleLogout = async () => {
+  try {
+    const res = await fetch("/api/auth/logout", {
+      method: "POST",
+    });
 
-      setLoggedIn(false);
-      setUserEmail("");
-      setCredits(null);
-      setTrialCreditsUsed(false);
-      setEmail("");
-      setLoginCaptchaToken("");
-      setBonusCaptchaToken("");
-      setUserMessage("Wylogowano.");
-    } catch (error) {
-      console.error(error);
-      setUserMessage("Wystąpił błąd podczas wylogowywania.");
+    const data = await res.json();
+
+    if (!res.ok || !data?.success) {
+      setUserMessage(data?.message || "Nie udało się wylogować.");
+      return;
     }
-  };
+
+    // 🔥 KLUCZOWE — reload strony (naprawia captcha)
+    window.location.reload();
+
+  } catch (error) {
+    console.error(error);
+    setUserMessage("Wystąpił błąd podczas wylogowywania.");
+  }
+};
 
 
   const startProgressSimulation = () => {
@@ -1787,7 +1789,7 @@ export default function Home() {
                 <label className="block text-sm font-semibold text-gray-700 mb-1">Adres</label>
                 <input
                   type="text"
-                  value="ksefxml@outlook.com"
+                  value="kontakt@ksefxml.pl"
                   readOnly
                   className="w-full rounded border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-700"
                 />

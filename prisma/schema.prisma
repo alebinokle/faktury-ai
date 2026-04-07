@@ -34,7 +34,7 @@ model Payment {
   id           String   @id @default(cuid())
   userId       String
   p24SessionId String   @unique
-  orderId      Int?
+  orderId      BigInt?
   packageCode  String
   amount       Int
   creditsAdded Int

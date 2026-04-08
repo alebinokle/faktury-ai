@@ -201,7 +201,7 @@ function extractOutputText(response: OpenAI.Responses.Response): string {
     }
   }
 
-  return texts.join("\\n").trim();
+  return texts.join("\n").trim();
 }
 
 function extractFirstJsonObject(text: string): string {
@@ -253,36 +253,36 @@ function escapeXml(value: string | null | undefined): string {
 }
 
 function normalizeSpaces(value: string | null | undefined): string {
-  return String(value ?? "").replace(/\\s+/g, " ").trim();
+  return String(value ?? "").replace(/\s+/g, " ").trim();
 }
 
 function normalizeNip(value: string | null | undefined): string {
   if (!value) return "";
-  return String(value).trim().replace(/^PL/i, "").replace(/[^\\d]/g, "");
+  return String(value).trim().replace(/^PL/i, "").replace(/[^\d]/g, "");
 }
 
 function hasNipFormat(value: string | null | undefined): boolean {
-  return /^\\d{10}$/.test(normalizeNip(value));
+  return /^\d{10}$/.test(normalizeNip(value));
 }
 
 function normalizeRegon(value: string | null | undefined): string {
   if (!value) return "";
-  return String(value).trim().replace(/[^\\d]/g, "");
+  return String(value).trim().replace(/[^\d]/g, "");
 }
 
 function normalizeBankAccount(value: string | null | undefined): string {
   if (!value) return "";
-  return String(value).trim().replace(/\\s/g, "").replace(/^PL/i, "").replace(/[^\\d]/g, "");
+  return String(value).trim().replace(/\s/g, "").replace(/^PL/i, "").replace(/[^\d]/g, "");
 }
 
 function normalizeDecimal(value: string | null | undefined, digits = 2): string {
   if (value == null || value === "") return "";
   const cleaned = String(value)
     .trim()
-    .replace(/\\s/g, "")
+    .replace(/\s/g, "")
     .replace(/[–—]/g, "-")
     .replace(/,/g, ".")
-    .replace(/[^\\d.-]/g, "");
+    .replace(/[^\d.-]/g, "");
   if (!cleaned) return "";
   const num = Number(cleaned);
   if (Number.isNaN(num)) return "";
@@ -291,7 +291,7 @@ function normalizeDecimal(value: string | null | undefined, digits = 2): string 
 
 function normalizeQuantity(value: string | null | undefined): string {
   if (value == null || value === "") return "1.000000";
-  const cleaned = String(value).trim().replace(/\\s/g, "").replace(",", ".").replace(/[^\\d.-]/g, "");
+  const cleaned = String(value).trim().replace(/\s/g, "").replace(",", ".").replace(/[^\d.-]/g, "");
   const num = Number(cleaned);
   if (Number.isNaN(num) || num <= 0) return "1.000000";
   return num.toFixed(6);
@@ -299,7 +299,7 @@ function normalizeQuantity(value: string | null | undefined): string {
 
 function normalizeVatRate(value: string | null | undefined): string {
   if (!value) return "";
-  const raw = String(value).trim().toLowerCase().replace(",", ".").replace(/\\s+/g, "");
+  const raw = String(value).trim().toLowerCase().replace(",", ".").replace(/\s+/g, "");
   if (["zw", "np", "oo"].includes(raw)) return raw === "oo" ? "0" : raw;
   const cleaned = raw.replace("%", "");
   const num = Number(cleaned);
@@ -321,7 +321,7 @@ function normalizeDate(value: string | null | undefined): string {
   if (!value) return "";
   const raw = String(value).trim();
 
-  if (/^\\d{4}-\\d{2}-\\d{2}$/.test(raw)) return raw;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
 
 const dmy = raw.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})$/);
 if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, "0")}-${dmy[1].padStart(2, "0")}`;
@@ -337,7 +337,7 @@ if (ymd) return `${ymd[1]}-${ymd[2].padStart(2, "0")}-${ymd[3].padStart(2, "0")}
 
 function formatMidnightZulu(dateValue: string | null | undefined): string {
   const date = normalizeDate(dateValue);
-  if (date && /^\\d{4}-\\d{2}-\\d{2}$/.test(date)) return `${date}T00:00:00Z`;
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) return `${date}T00:00:00Z`;
 
   const now = new Date();
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}T00:00:00Z`;
@@ -350,7 +350,7 @@ function splitAddress(address: string | null | undefined): { line1: string; line
   const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
   if (parts.length >= 2) return { line1: parts[0], line2: parts.slice(1).join(", ") };
 
-  const streetFirst = raw.match(/^(.+?\\d+[A-Za-z/\\-]*)(?:\\s+|,\\s*)(\\d{2}-\\d{3}.*)$/);
+  const streetFirst = raw.match(/^(.+?\d+[A-Za-z/\-]*)(?:\s+|,\s*)(\d{2}-\d{3}.*)$/);
   if (streetFirst) {
     return {
       line1: streetFirst[1].trim(),
@@ -358,7 +358,7 @@ function splitAddress(address: string | null | undefined): { line1: string; line
     };
   }
 
-  const postalFirst = raw.match(/^(\\d{2}-\\d{3}\\s+[^,]+)(?:\\s+|,\\s*)(.+)$/);
+  const postalFirst = raw.match(/^(\d{2}-\d{3}\s+[^,]+)(?:\s+|,\s*)(.+)$/);
   if (postalFirst) {
     return {
       line1: postalFirst[2].trim(),
@@ -366,11 +366,11 @@ function splitAddress(address: string | null | undefined): { line1: string; line
     };
   }
 
-  const postalMatch = raw.match(/^(.*?)(\\d{2}-\\d{3}.*)$/);
+  const postalMatch = raw.match(/^(.*?)(\d{2}-\d{3}.*)$/);
   if (postalMatch) {
     const left = postalMatch[1].trim().replace(/[,\\s]+$/, "");
     const right = postalMatch[2].trim();
-    if (left && /\\d/.test(left)) {
+    if (left && /\d/.test(left)) {
       return { line1: left, line2: right };
     }
     if (right && /[A-Za-zĄĆĘŁŃÓŚŹŻ]/i.test(right)) {
@@ -408,7 +408,7 @@ function buildSafeFilename(invoiceNumber: string | null | undefined): string {
     String(invoiceNumber)
       .trim()
       .replace(/[\\/\\\\]/g, "-")
-      .replace(/[^\\p{L}\\p{N}._-]+/gu, "_")
+      .replace(/[^\p{L}\p{N}._-]+/gu, "_")
       .replace(/_+/g, "_")
       .replace(/^_+|_+$/g, "") || "faktura"
   );
